@@ -7,10 +7,7 @@
 #include <linux/slab.h>
 #include <linux/version.h>
 #include <linux/pm.h>
-#include <uapi/linux/sched/types.h>
-#else
-#include <linux/sched.h>
-#endif
+#include <linux/sched/signal.h>
 #include <wcn_bus.h>
 #ifdef CONFIG_WCN_SLP
 #include "../sleep/sdio_int.h"
@@ -26,50 +23,50 @@
 #define SDIOHAL_PERF_LEVEL (0x10)
 
 #define sdiohal_info(fmt, args...) \
-	pr_info("sdiohal:" fmt, ## args)
+    pr_info("sdiohal:" fmt, ## args)
 #define sdiohal_err(fmt, args...) \
-	pr_err("sdiohal err:" fmt, ## args)
+    pr_err("sdiohal err:" fmt, ## args)
 
 #ifdef CONFIG_DEBUG_FS
 extern long int sdiohal_log_level;
 
 #define sdiohal_normal(fmt, args...) \
-	do { if (sdiohal_log_level & SDIOHAL_NORMAL_LEVEL) \
-		sdiohal_info(fmt, ## args); \
-	} while (0)
+    do { if (sdiohal_log_level & SDIOHAL_NORMAL_LEVEL) \
+        sdiohal_info(fmt, ## args); \
+    } while (0)
 #define sdiohal_debug(fmt, args...) \
-	do { if (sdiohal_log_level & SDIOHAL_DEBUG_LEVEL) \
-		sdiohal_info(fmt, ## args); \
-	} while (0)
+    do { if (sdiohal_log_level & SDIOHAL_DEBUG_LEVEL) \
+        sdiohal_info(fmt, ## args); \
+    } while (0)
 #define sdiohal_pr_list(loglevel, fmt, args...) \
-	do { if (sdiohal_log_level & loglevel) \
-		sdiohal_info(fmt, ## args); \
-	} while (0)
+    do { if (sdiohal_log_level & loglevel) \
+        sdiohal_info(fmt, ## args); \
+    } while (0)
 #define sdiohal_pr_data(level, prefix_str, prefix_type, \
-			rowsize, groupsize, buf, len, ascii, loglevel) \
-	do { if (sdiohal_log_level & loglevel) \
-		print_hex_dump(level, prefix_str, prefix_type, \
-			       rowsize, groupsize, buf, len, ascii); \
-	} while (0)
+            rowsize, groupsize, buf, len, ascii, loglevel) \
+    do { if (sdiohal_log_level & loglevel) \
+        print_hex_dump(level, prefix_str, prefix_type, \
+                   rowsize, groupsize, buf, len, ascii); \
+    } while (0)
 #define sdiohal_pr_perf(fmt, args...) \
-	do { if (sdiohal_log_level & SDIOHAL_PERF_LEVEL) \
-		pr_info(fmt, ## args); \
-	} while (0)
+    do { if (sdiohal_log_level & SDIOHAL_PERF_LEVEL) \
+        pr_info(fmt, ## args); \
+    } while (0)
 #else
 #define sdiohal_normal(fmt, args...)
 #define sdiohal_debug(fmt, args...)
 #define sdiohal_pr_list(loglevel, fmt, args...)
-#define	sdiohal_pr_data(level, prefix_str, prefix_type, \
-			rowsize, groupsize, buf, len, ascii, loglevel)
+#define sdiohal_pr_data(level, prefix_str, prefix_type, \
+            rowsize, groupsize, buf, len, ascii, loglevel)
 #define sdiohal_pr_perf(fmt, args...)
 #endif
 
-#define SDIOHAL_SDMA	0
-#define SDIOHAL_ADMA	1
+#define SDIOHAL_SDMA    0
+#define SDIOHAL_ADMA    1
 
-#define SDIOHAL_RX_EXTERNAL_IRQ	0
-#define SDIOHAL_RX_INBAND_IRQ	1
-#define SDIOHAL_RX_POLLING	2
+#define SDIOHAL_RX_EXTERNAL_IRQ    0
+#define SDIOHAL_RX_INBAND_IRQ    1
+#define SDIOHAL_RX_POLLING    2
 
 #ifdef CONFIG_UWE5623
 #define SDIO_RESET_ENABLE 0x40930040
@@ -82,10 +79,10 @@ extern long int sdiohal_log_level;
 #define SDIO_CHANNEL_NUM (SDIO_CHN_TX_NUM + SDIO_CHN_RX_NUM)
 
 /* dump designated channel data when assert happened */
-#define SDIO_DUMP_CHANNEL_DATA		1
-#define SDIO_DUMP_TX_CHANNEL_NUM	8
-#define SDIO_DUMP_RX_CHANNEL_NUM	22
-#define SDIO_DUMP_RX_WIFI_EVENT_MIN	(0x80)
+#define SDIO_DUMP_CHANNEL_DATA        1
+#define SDIO_DUMP_TX_CHANNEL_NUM    8
+#define SDIO_DUMP_RX_CHANNEL_NUM    22
+#define SDIO_DUMP_RX_WIFI_EVENT_MIN    (0x80)
 
 /* list bumber */
 #define SDIO_TX_LIST_NUM SDIO_CHN_TX_NUM
@@ -109,7 +106,7 @@ extern long int sdiohal_log_level;
 #define SDIOHAL_BLK_SIZE (sprdwcn_bus_get_blk_size())
 /* each pac data max size,cp align size */
 #define MAX_PAC_SIZE ((SDIOHAL_BLK_SIZE == 512) ? \
-	(SDIOHAL_BLK_SIZE * 4) : (SDIOHAL_BLK_SIZE * 2))
+    (SDIOHAL_BLK_SIZE * 4) : (SDIOHAL_BLK_SIZE * 2))
 #else
 /* cp blk size */
 #define SDIOHAL_BLK_SIZE 840
@@ -127,15 +124,15 @@ extern long int sdiohal_log_level;
 /* for 64 bit sys */
 #define SDIOHAL_RX_RECVBUF_LEN (MAX_CHAIN_NODE_NUM * MAX_MBUF_SIZE)
 #define SDIOHAL_FRAG_PAGE_MAX_ORDER \
-	get_order(SDIOHAL_RX_RECVBUF_LEN)
+    get_order(SDIOHAL_RX_RECVBUF_LEN)
 
 /* for 32 bit sys */
 #define SDIOHAL_32_BIT_RX_RECVBUF_LEN (16 << 10)
 #define SDIOHAL_FRAG_PAGE_MAX_ORDER_32_BIT \
-	get_order(SDIOHAL_32_BIT_RX_RECVBUF_LEN)
+    get_order(SDIOHAL_32_BIT_RX_RECVBUF_LEN)
 
 #define SDIOHAL_FRAG_PAGE_MAX_SIZE \
-	(PAGE_SIZE << SDIOHAL_FRAG_PAGE_MAX_ORDER)
+    (PAGE_SIZE << SDIOHAL_FRAG_PAGE_MAX_ORDER)
 #define SDIOHAL_PAGECNT_MAX_BIAS SDIOHAL_FRAG_PAGE_MAX_SIZE
 
 /* tx buf size for normal dma mode */
@@ -158,41 +155,41 @@ extern long int sdiohal_log_level;
 #define SDIOHAL_MAX_FUNCS 2
 
 /* cp sdio reg addr */
-#define SDIOHAL_DT_MODE_ADDR	0x0f
-#define SDIOHAL_PK_MODE_ADDR	0x20
-#define SDIOHAL_CCCR_ABORT		0x06
-#define VAL_ABORT_TRANS			0x01
-#define SDIOHAL_FBR_SYSADDR0	0x15c
-#define SDIOHAL_FBR_SYSADDR1	0x15d
-#define SDIOHAL_FBR_SYSADDR2	0x15e
-#define SDIOHAL_FBR_SYSADDR3	0x15f
-#define SDIOHAL_FBR_APBRW0		0x180
-#define SDIOHAL_FBR_APBRW1		0x181
-#define SDIOHAL_FBR_APBRW2		0x182
-#define SDIOHAL_FBR_APBRW3		0x183
-#define SDIOHAL_FBR_STBBA0		0x1bc
-#define SDIOHAL_FBR_STBBA1		0x1bd
-#define SDIOHAL_FBR_STBBA2		0x1be
-#define SDIOHAL_FBR_STBBA3		0x1bf
-#define SDIOHAL_FBR_DEINT_EN	0x1ca
-#define VAL_DEINT_ENABLE		0x3
-#define SDIOHAL_FBR_PUBINT_RAW4	0x1e8
+#define SDIOHAL_DT_MODE_ADDR    0x0f
+#define SDIOHAL_PK_MODE_ADDR    0x20
+#define SDIOHAL_CCCR_ABORT        0x06
+#define VAL_ABORT_TRANS            0x01
+#define SDIOHAL_FBR_SYSADDR0    0x15c
+#define SDIOHAL_FBR_SYSADDR1    0x15d
+#define SDIOHAL_FBR_SYSADDR2    0x15e
+#define SDIOHAL_FBR_SYSADDR3    0x15f
+#define SDIOHAL_FBR_APBRW0        0x180
+#define SDIOHAL_FBR_APBRW1        0x181
+#define SDIOHAL_FBR_APBRW2        0x182
+#define SDIOHAL_FBR_APBRW3        0x183
+#define SDIOHAL_FBR_STBBA0        0x1bc
+#define SDIOHAL_FBR_STBBA1        0x1bd
+#define SDIOHAL_FBR_STBBA2        0x1be
+#define SDIOHAL_FBR_STBBA3        0x1bf
+#define SDIOHAL_FBR_DEINT_EN    0x1ca
+#define VAL_DEINT_ENABLE        0x3
+#define SDIOHAL_FBR_PUBINT_RAW4    0x1e8
 
 #define SDIOHAL_ALIGN_4BYTE(a)  (((a)+3)&(~3))
 #ifdef CONFIG_SDIO_BLKSIZE_512
 #define SDIOHAL_ALIGN_BLK(a)  (((a)+511)&(~511))
 #elif defined(CONFIG_WCN_PARSE_DTS)
 #define SDIOHAL_ALIGN_BLK(a) ((SDIOHAL_BLK_SIZE == 512) ? \
-	(((a)+511)&(~511)) : (((a)%SDIOHAL_BLK_SIZE) ? \
-	(((a)/SDIOHAL_BLK_SIZE + 1)*SDIOHAL_BLK_SIZE) : (a)))
+    (((a)+511)&(~511)) : (((a)%SDIOHAL_BLK_SIZE) ? \
+    (((a)/SDIOHAL_BLK_SIZE + 1)*SDIOHAL_BLK_SIZE) : (a)))
 #else
 #define SDIOHAL_ALIGN_BLK(a) (((a)%SDIOHAL_BLK_SIZE) ? \
-	(((a)/SDIOHAL_BLK_SIZE + 1)*SDIOHAL_BLK_SIZE) : (a))
+    (((a)/SDIOHAL_BLK_SIZE + 1)*SDIOHAL_BLK_SIZE) : (a))
 #endif
 
 #define WCN_128BIT_CTL_BASE 0x1a0
 #define WCN_128BIT_STAT_BASE 0x140
-#define CP_128BIT_SIZE	(0x0f)
+#define CP_128BIT_SIZE    (0x0f)
 
 #define WCN_CTL_REG_0 (WCN_128BIT_CTL_BASE + 0X00)
 #define WCN_CTL_REG_1 (WCN_128BIT_CTL_BASE + 0X01)
@@ -228,161 +225,152 @@ extern long int sdiohal_log_level;
 #define WCN_STATE_REG_14 (WCN_128BIT_STAT_BASE + 0X0e)
 #define WCN_STATE_REG_15 (WCN_128BIT_STAT_BASE + 0X0f)
 
-#define SDIO_VER_CCCR	(0X0)
+#define SDIO_VER_CCCR    (0X0)
 
 #define SDIO_CP_INT_EN (DUMP_SDIO_ADDR + 0x58)
 
 /* for marlin3 */
-#define CP_PMU_STATUS	(WCN_STATE_REG_0)
+#define CP_PMU_STATUS    (WCN_STATE_REG_0)
 #define CP_SWITCH_SGINAL (WCN_CTL_REG_4)
 #define CP_RESET_SLAVE  (WCN_CTL_REG_8)
-#define CP_BUS_HREADY	(WCN_STATE_REG_4)
-#define CP_HREADY_SIZE	(0x04)
+#define CP_BUS_HREADY    (WCN_STATE_REG_4)
+#define CP_HREADY_SIZE    (0x04)
 
 /* for malrin3e */
-#define WCN_CTL_EN	BIT(7)
-#define WCN_SYS_MASK	(0xf)
-#define WCN_MODE_MASK	(0x3 << 4)
+#define WCN_CTL_EN    BIT(7)
+#define WCN_SYS_MASK    (0xf)
+#define WCN_MODE_MASK    (0x3 << 4)
 #define WCN_DEBUG_CTL_REG (WCN_CTL_REG_2)
 #define WCN_DEBUG_MODE_SYS_REG (WCN_CTL_REG_1)
-#define WCN_SEL_SIG_REG	(WCN_CTL_REG_0)
-#define WCN_SIG_STATE	(WCN_STATE_REG_0)
+#define WCN_SEL_SIG_REG    (WCN_CTL_REG_0)
+#define WCN_SIG_STATE    (WCN_STATE_REG_0)
 
 #define SDIOHAL_REMOVE_CARD_VAL 0x8000
 #define WCN_CARD_EXIST(xmit) \
-	(atomic_read(xmit) < SDIOHAL_REMOVE_CARD_VAL)
+    (atomic_read(xmit) < SDIOHAL_REMOVE_CARD_VAL)
 
 struct sdiohal_frag_mg {
-	struct page_frag frag;
-	unsigned int pagecnt_bias;
+    struct page_frag frag;
+    unsigned int pagecnt_bias;
 };
 
 struct sdiohal_list_t {
-	struct list_head head;
-	struct mbuf_t *mbuf_head;
-	struct mbuf_t *mbuf_tail;
-	unsigned int type;
-	unsigned int subtype;
-	unsigned int node_num;
+    struct list_head head;
+    struct mbuf_t *mbuf_head;
+    struct mbuf_t *mbuf_tail;
+    unsigned int type;
+    unsigned int subtype;
+    unsigned int node_num;
 };
 
 struct buf_pool_t {
-	int size;
-	int free;
-	int payload;
-	void *head;
-	char *mem;
-	spinlock_t lock;
+    int size;
+    int free;
+    int payload;
+    void *head;
+    char *mem;
+    spinlock_t lock;
 };
 
 struct sdiohal_sendbuf_t {
-	unsigned int used_len;
-	unsigned char *buf;
-	unsigned int retry_len;
-	unsigned char *retry_buf;
+    unsigned int used_len;
+    unsigned char *buf;
+    unsigned int retry_len;
+    unsigned char *retry_buf;
 };
 
 struct sdiohal_data_bak_t {
-	unsigned int time;
-	unsigned char data_bk[SDIOHAL_PRINTF_LEN];
+    unsigned int time;
+    unsigned char data_bk[SDIOHAL_PRINTF_LEN];
 };
 
 struct sdiohal_data_t {
-	struct task_struct *tx_thread;
-	struct task_struct *rx_thread;
-	struct completion tx_completed;
-	struct completion rx_completed;
-#if KERNEL_VERSION(4, 14, 0) <= LINUX_VERSION_CODE
-	struct wake_lock tx_wl;
-	struct wake_lock rx_wl;
-#else
-	struct wakeup_source tx_ws;
-	struct wakeup_source rx_ws;
-#endif
-	atomic_t tx_wake_flag;
-	atomic_t rx_wake_flag;
+    struct task_struct *tx_thread;
+    struct task_struct *rx_thread;
+    struct completion tx_completed;
+    struct completion rx_completed;
+    struct wakeup_source tx_ws;
+    struct wakeup_source rx_ws;
+    atomic_t tx_wake_flag;
+    atomic_t rx_wake_flag;
 #ifdef CONFIG_WCN_SLP
-	atomic_t tx_wake_cp_count[SUBSYS_MAX];
-	atomic_t rx_wake_cp_count[SUBSYS_MAX];
+    atomic_t tx_wake_cp_count[SUBSYS_MAX];
+    atomic_t rx_wake_cp_count[SUBSYS_MAX];
 #endif
-	struct mutex xmit_lock;
-	struct mutex xmit_sdma;
-	spinlock_t tx_spinlock;
-	spinlock_t rx_spinlock;
-	atomic_t flag_resume;
-	atomic_t tx_mbuf_num;
-	atomic_t xmit_cnt;
-	atomic_t xmit_start;
-	bool exit_flag;
-	/* adma enable:1, disable:0 */
-	bool adma_tx_enable;
-	bool adma_rx_enable;
-	bool pwrseq;
-	/* blk_size: 0 840, 1 512 */
-	bool blk_size;
-	/* dt mode read or write fail flag */
-	bool dt_rw_fail;
-	/* EXTERNAL_IRQ 0, INBAND_IRQ 1, POLLING 2. */
-	unsigned char irq_type;
+    struct mutex xmit_lock;
+    struct mutex xmit_sdma;
+    spinlock_t tx_spinlock;
+    spinlock_t rx_spinlock;
+    atomic_t flag_resume;
+    atomic_t tx_mbuf_num;
+    atomic_t xmit_cnt;
+    atomic_t xmit_start;
+    bool exit_flag;
+    /* adma enable:1, disable:0 */
+    bool adma_tx_enable;
+    bool adma_rx_enable;
+    bool pwrseq;
+    /* blk_size: 0 840, 1 512 */
+    bool blk_size;
+    /* dt mode read or write fail flag */
+    bool dt_rw_fail;
+    /* EXTERNAL_IRQ 0, INBAND_IRQ 1, POLLING 2. */
+    unsigned char irq_type;
 
-	/* tx data list for send */
-	struct sdiohal_list_t tx_list_head;
-	/* tx data list for pop */
-	struct sdiohal_list_t *list_tx[SDIO_CHN_TX_NUM];
-	/* rx data list for dispatch */
-	struct sdiohal_list_t *list_rx[SDIO_CHN_RX_NUM];
-	/* mbuf list */
-	struct sdiohal_list_t list_rx_buf;
-	/* frag data buf */
-	struct sdiohal_frag_mg frag_ctl;
-	struct mchn_ops_t *ops[SDIO_CHANNEL_NUM];
-	struct mutex callback_lock[SDIO_CHANNEL_NUM];
-	struct buf_pool_t pool[SDIO_CHANNEL_NUM];
+    /* tx data list for send */
+    struct sdiohal_list_t tx_list_head;
+    /* tx data list for pop */
+    struct sdiohal_list_t *list_tx[SDIO_CHN_TX_NUM];
+    /* rx data list for dispatch */
+    struct sdiohal_list_t *list_rx[SDIO_CHN_RX_NUM];
+    /* mbuf list */
+    struct sdiohal_list_t list_rx_buf;
+    /* frag data buf */
+    struct sdiohal_frag_mg frag_ctl;
+    struct mchn_ops_t *ops[SDIO_CHANNEL_NUM];
+    struct mutex callback_lock[SDIO_CHANNEL_NUM];
+    struct buf_pool_t pool[SDIO_CHANNEL_NUM];
 
-	bool flag_init;
-	atomic_t flag_suspending;
-	int gpio_num;
-	unsigned int irq_num;
-	unsigned int irq_trigger_type;
-	atomic_t irq_cnt;
-	unsigned int card_dump_flag;
-	struct sdio_func *sdio_func[SDIOHAL_MAX_FUNCS];
-	struct mmc_host *sdio_dev_host;
-	struct scatterlist sg_list[MAX_CHAIN_NODE_NUM + 1];
+    bool flag_init;
+    atomic_t flag_suspending;
+    int gpio_num;
+    unsigned int irq_num;
+    unsigned int irq_trigger_type;
+    atomic_t irq_cnt;
+    unsigned int card_dump_flag;
+    struct sdio_func *sdio_func[SDIOHAL_MAX_FUNCS];
+    struct mmc_host *sdio_dev_host;
+    struct scatterlist sg_list[MAX_CHAIN_NODE_NUM + 1];
 
-	unsigned int success_pac_num;
-	struct sdiohal_sendbuf_t send_buf;
-	unsigned char *eof_buf;
+    unsigned int success_pac_num;
+    struct sdiohal_sendbuf_t send_buf;
+    unsigned char *eof_buf;
 
-	unsigned int dtbs;
-	unsigned int remain_pac_num;
-	unsigned long long rx_packer_cnt;
-	char *dtbs_buf;
+    unsigned int dtbs;
+    unsigned int remain_pac_num;
+    unsigned long long rx_packer_cnt;
+    char *dtbs_buf;
 
-	/* for performance statics */
-	struct timespec tm_begin_sch;
-	struct timespec tm_end_sch;
-	struct timespec tm_begin_irq;
-	struct timespec tm_end_irq;
+    /* for performance statics */
+    struct timespec tm_begin_sch;
+    struct timespec tm_end_sch;
+    struct timespec tm_begin_irq;
+    struct timespec tm_end_irq;
 
-#if KERNEL_VERSION(4, 14, 0) <= LINUX_VERSION_CODE
-	struct wake_lock scan_wl;
-#else
-	struct wakeup_source scan_ws;
-#endif
-	struct completion scan_done;
-	struct completion remove_done;
-	unsigned int sdio_int_reg;
+    struct wakeup_source scan_ws;
+    struct completion scan_done;
+    struct completion remove_done;
+    unsigned int sdio_int_reg;
 #if SDIO_DUMP_CHANNEL_DATA
-	struct sdiohal_data_bak_t chntx_push_old;
-	struct sdiohal_data_bak_t chntx_push_new;
-	struct sdiohal_data_bak_t chntx_denq_old;
-	struct sdiohal_data_bak_t chntx_denq_new;
-	struct sdiohal_data_bak_t chnrx_dispatch_old;
-	struct sdiohal_data_bak_t chnrx_dispatch_new;
+    struct sdiohal_data_bak_t chntx_push_old;
+    struct sdiohal_data_bak_t chntx_push_new;
+    struct sdiohal_data_bak_t chntx_denq_old;
+    struct sdiohal_data_bak_t chntx_denq_new;
+    struct sdiohal_data_bak_t chnrx_dispatch_old;
+    struct sdiohal_data_bak_t chnrx_dispatch_new;
 #endif
-	int printlog_txchn;
-	int printlog_rxchn;
+    int printlog_txchn;
+    int printlog_rxchn;
 };
 
 struct sdiohal_data_t *sdiohal_get_data(void);
@@ -435,23 +423,23 @@ void sdiohal_op_leave(void);
 void sdiohal_sdma_enter(void);
 void sdiohal_sdma_leave(void);
 void sdiohal_channel_to_hwtype(int inout, int chn,
-			       unsigned int *type, unsigned int *subtype);
+                   unsigned int *type, unsigned int *subtype);
 int sdiohal_hwtype_to_channel(int inout, unsigned int type,
-			      unsigned int subtype);
+                  unsigned int subtype);
 
 /* for list manger */
 bool sdiohal_is_tx_list_empty(void);
 int sdiohal_tx_packer(struct sdiohal_sendbuf_t *send_buf,
-		      struct sdiohal_list_t *data_list,
-		      struct mbuf_t *mbuf_node);
+              struct sdiohal_list_t *data_list,
+              struct mbuf_t *mbuf_node);
 int sdiohal_tx_set_eof(struct sdiohal_sendbuf_t *send_buf,
-		       unsigned char *eof_buf);
+               unsigned char *eof_buf);
 void sdiohal_tx_list_enq(int channel, struct mbuf_t *head,
-			 struct mbuf_t *tail, int num);
+             struct mbuf_t *tail, int num);
 void sdiohal_tx_find_data_list(struct sdiohal_list_t *data_list);
 int sdiohal_tx_list_denq(struct sdiohal_list_t *data_list);
 int sdiohal_rx_list_free(struct mbuf_t *mbuf_head,
-			 struct mbuf_t *mbuf_tail, int num);
+             struct mbuf_t *mbuf_tail, int num);
 struct sdiohal_list_t *sdiohal_get_rx_mbuf_list(int num);
 struct sdiohal_list_t *sdiohal_get_rx_mbuf_node(int num);
 int sdiohal_rx_list_dispatch(void);
@@ -469,7 +457,7 @@ int sdiohal_sdio_pt_read(unsigned char *src, unsigned int datalen);
 int sdiohal_adma_pt_write(struct sdiohal_list_t *data_list);
 int sdiohal_adma_pt_read(struct sdiohal_list_t *data_list);
 int sdiohal_tx_data_list_send(struct sdiohal_list_t *data_list,
-			      bool pop_flag);
+                  bool pop_flag);
 void sdiohal_enable_rx_irq(void);
 
 /* for debugfs */
@@ -480,23 +468,23 @@ void sdiohal_debug_deinit(void);
 
 
 void sdiohal_print_list_data(int channel, struct sdiohal_list_t *data_list,
-			     const char *func, int loglevel);
+                 const char *func, int loglevel);
 void sdiohal_print_mbuf_data(int channel, struct mbuf_t *head,
-			     struct mbuf_t *tail, int num, const char *func,
-			     int loglevel);
+                 struct mbuf_t *tail, int num, const char *func,
+                 int loglevel);
 
 void sdiohal_list_check(struct sdiohal_list_t *data_list,
-			const char *func, bool dir);
+            const char *func, bool dir);
 void sdiohal_mbuf_list_check(int channel, struct mbuf_t *head,
-			     struct mbuf_t *tail, int num,
-			     const char *func, bool dir, int loglevel);
+                 struct mbuf_t *tail, int num,
+                 const char *func, bool dir, int loglevel);
 
 int sdiohal_init(void);
 void sdiohal_exit(void);
 int sdiohal_list_push(int chn, struct mbuf_t *head,
-		      struct mbuf_t *tail, int num);
+              struct mbuf_t *tail, int num);
 int sdiohal_list_direct_write(int channel, struct mbuf_t *head,
-			      struct mbuf_t *tail, int num);
+                  struct mbuf_t *tail, int num);
 
 /* driect mode,reg access.etc */
 int sdiohal_dt_read(unsigned int addr, void *buf, unsigned int len);
