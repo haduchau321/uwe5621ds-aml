@@ -18,11 +18,7 @@
 #include <linux/types.h>
 #include <linux/version.h>
 #include <linux/wait.h>
-#if KERNEL_VERSION(4, 14, 0) <= LINUX_VERSION_CODE
-// #include <linux/wakelock.h>
-#include "wakelock.h"
-#endif
-
+#include <linux/pm.h>
 #include "mdbg_type.h"
 #include <wcn_bus.h>
 

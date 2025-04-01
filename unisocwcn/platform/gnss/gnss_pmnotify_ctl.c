@@ -32,8 +32,7 @@
 #include <linux/timer.h>
 #include <linux/types.h>
 #include <linux/uaccess.h>
-// #include <linux/wakelock.h>
-#include "wakelock.h"
+#include <linux/pm.h>
 #include <linux/wait.h>
 #include <marlin_platform.h>
 

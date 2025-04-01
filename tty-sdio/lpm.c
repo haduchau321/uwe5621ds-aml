@@ -10,10 +10,7 @@
 #include <linux/gpio.h>
 #include <linux/seq_file.h>
 #include <linux/version.h>
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 9, 0)
-#include "wakelock.h"
-#else
-#endif
+#include <linux/pm.h>
 #include <linux/export.h>
 #include <marlin_platform.h>
 

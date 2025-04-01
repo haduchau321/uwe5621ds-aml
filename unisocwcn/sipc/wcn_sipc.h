@@ -21,8 +21,7 @@
 #include <linux/swcnblk.h>
 #include <linux/types.h>
 #include <linux/wait.h>
-// #include <linux/wakelock.h>
-#include "wakelock.h"
+#include <linux/pm.h>
 
 #include "bus_common.h"
 #include "mdbg_type.h"

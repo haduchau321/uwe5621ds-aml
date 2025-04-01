@@ -2,10 +2,8 @@
 #define __SDIO_INT_H__
 #include <linux/device.h>
 #include <linux/version.h>
-#if KERNEL_VERSION(4, 14, 0) <= LINUX_VERSION_CODE
-// #include <linux/wakelock.h>
-#include "wakelock.h"
-#endif
+#include <linux/pm.h>
+
 
 #define SLP_MGR_HEADER "[slp_mgr]"
 
