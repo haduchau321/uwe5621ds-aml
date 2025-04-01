@@ -26,7 +26,9 @@
 #endif /* RTT_SUPPORT */
 
 #define VENDOR_SCAN_RESULT_EXPIRE	(7 * HZ)
+#define WIFI_SUBCMD_SET_COUNTRY_CODE  0x0006
 
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(3, 14, 0)
 static const u8 *wpa_scan_get_ie(u8 *res, u8 ie_len, u8 ie)
 {
 	const u8 *end, *pos;
@@ -453,31 +455,49 @@ static int sprdwl_vendor_get_llstat_handler(struct wiphy *wiphy,
 	struct wifi_iface_stat *iface_st;
 	struct sprdwl_llstat_radio *dif_radio;
 	u16 r_len = sizeof(*llst);
-	u8 r_buf[r_len], ret, i;
+	u8 r_buf[sizeof(*llst)], i;
 	u32 reply_radio_length, reply_iface_length;
+	int ret;
 
 	struct sprdwl_priv *priv = wiphy_priv(wiphy);
 	struct sprdwl_vif *vif = container_of(wdev, struct sprdwl_vif, wdev);
 #ifdef CP2_RESET_SUPPORT
-	if (true == priv->sync.scan_not_allowed)
+	if(true == priv->sync.cp2_reset_flag)
 		return 0;
-#endif
-	if (!priv || !vif)
+#endif /*CP2_RESET_SUPPORT*/
+	if (!priv || !vif) {
+		wl_err("%s err: EIO\n", __func__);
 		return -EIO;
-	if (!(priv->fw_capa & SPRDWL_CAPA_LL_STATS))
+	}
+	if (!(priv->fw_capa & SPRDWL_CAPA_LL_STATS)) {
+		wl_err("%s err: ENOTSUPP\n", __func__);
 		return -ENOTSUPP;
+	}
 	memset(r_buf, 0, r_len);
 	radio_st = kzalloc(sizeof(*radio_st), GFP_KERNEL);
+	if (!radio_st) {
+		wl_err("%s err: ENOMEM, radio_st\n", __func__);
+		return -ENOMEM;
+	}
 	iface_st = kzalloc(sizeof(*iface_st), GFP_KERNEL);
+	if (!iface_st) {
+		kfree(radio_st);
+		wl_err("%s err: ENOMEM, iface_st\n", __func__);	
+		return -ENOMEM;
+	}
 	dif_radio = kzalloc(sizeof(*dif_radio), GFP_KERNEL);
-
-	if (!radio_st || !iface_st || !dif_radio)
-		goto out_put_fail;
+	if (!dif_radio) {
+		kfree(radio_st);
+		kfree(iface_st);
+		wl_err("%s err: ENOMEM, dif_radio\n", __func__);
+		return  -ENOMEM;
+	}
 	ret = sprdwl_llstat(priv, vif->ctx_id, SPRDWL_SUBCMD_GET, NULL, 0,
 			    r_buf, &r_len);
-	if (ret)
-		goto out_put_fail;
-
+	if (ret) {
+		wl_err("%s err: clean\n", __func__);
+		goto clean;
+	}
 	llst = (struct sprdwl_llstat_data *)r_buf;
 
 	calc_radio_dif(dif_radio, llst, &priv->pre_radio);
@@ -486,7 +506,7 @@ static int sprdwl_vendor_get_llstat_handler(struct wiphy *wiphy,
 	iface_st->info.mode = vif->mode;
 	memcpy(iface_st->info.mac_addr, vif->ndev->dev_addr,
 	       ETH_ALEN);
-	iface_st->info.state = vif->sm_state;
+	iface_st->info.state = (enum wifi_connection_state)vif->sm_state;
 	memcpy(iface_st->info.ssid, vif->ssid,
 	       IEEE80211_MAX_SSID_LEN);
 	ether_addr_copy(iface_st->info.bssid, vif->bssid);
@@ -519,17 +539,19 @@ static int sprdwl_vendor_get_llstat_handler(struct wiphy *wiphy,
 	wl_info("start to put radio data\n");
 	reply_radio = cfg80211_vendor_cmd_alloc_reply_skb(wiphy,
 							  reply_radio_length);
-	if (!reply_radio)
-		goto out_put_fail;
+	if (!reply_radio) {
+		wl_err("%s err: clean, reply_radio\n", __func__);
+		goto clean;
+	}
 
 	if (nla_put_u32(reply_radio, NL80211_ATTR_VENDOR_ID, OUI_SPREAD))
-		goto out_put_fail;
+		goto radio_out_put_fail;
 	if (nla_put_u32(reply_radio, NL80211_ATTR_VENDOR_SUBCMD,
 			SPRDWL_VENDOR_GET_LLSTAT))
-		goto out_put_fail;
+		goto radio_out_put_fail;
 	if (nla_put_u32(reply_radio, SPRDWL_LL_STATS_TYPE,
 			SPRDWL_NL80211_VENDOR_SUBCMD_LL_STATS_TYPE_RADIO))
-		goto out_put_fail;
+		goto radio_out_put_fail;
 
 	ret = sprdwl_compose_radio_st(reply_radio, radio_st);
 
@@ -539,29 +561,39 @@ static int sprdwl_vendor_get_llstat_handler(struct wiphy *wiphy,
 	/*alloc iface reply buffer*/
 	reply_iface = cfg80211_vendor_cmd_alloc_reply_skb(wiphy,
 							  reply_iface_length);
-	if (!reply_iface)
-		goto out_put_fail;
-
+	if (!reply_iface) {
+		wl_err("%s err: clean, reply_iface\n", __func__);
+		goto clean;
+	}
 	if (nla_put_u32(reply_iface, NL80211_ATTR_VENDOR_ID, OUI_SPREAD))
-		goto out_put_fail;
+		goto iface_out_put_fail;
 	if (nla_put_u32(reply_iface, NL80211_ATTR_VENDOR_SUBCMD,
 			SPRDWL_VENDOR_GET_LLSTAT))
-		goto out_put_fail;
+		goto iface_out_put_fail;
 	if (nla_put_u32(reply_iface, SPRDWL_LL_STATS_TYPE,
 			SPRDWL_NL80211_VENDOR_SUBCMD_LL_STATS_TYPE_IFACE))
-		goto out_put_fail;
+		goto iface_out_put_fail;
 	ret = sprdwl_compose_iface_st(reply_iface, iface_st);
 	ret = cfg80211_vendor_cmd_reply(reply_iface);
-
+clean:
 	kfree(radio_st);
 	kfree(iface_st);
 	kfree(dif_radio);
+	wl_err("%s clean, ret=%d\n", __func__, ret);
 	return ret;
-out_put_fail:
+radio_out_put_fail:
 	kfree(radio_st);
 	kfree(iface_st);
 	kfree(dif_radio);
-	WARN_ON(1);
+	kfree_skb(reply_radio);
+	wl_err("%s radio_out_put_fail\n", __func__);
+	return -EMSGSIZE;
+iface_out_put_fail:
+	kfree(radio_st);
+	kfree(iface_st);
+	kfree(dif_radio);
+	kfree_skb(reply_iface);
+	wl_err("%s iface_out_put_fail\n", __func__);
 	return -EMSGSIZE;
 }
 
@@ -575,7 +607,7 @@ static int sprdwl_vendor_clr_llstat_handler(struct wiphy *wiphy,
 	struct nlattr *tb[SPRDWL_LL_STATS_CLR_MAX + 1];
 	u32 *stats_clear_rsp_mask, stats_clear_req_mask = 0;
 	u16 r_len = sizeof(*stats_clear_rsp_mask);
-	u8 r_buf[r_len];
+	u8 r_buf[sizeof(*stats_clear_rsp_mask)];
 	u32 reply_length, ret, err;
 
 	struct sprdwl_priv *priv = wiphy_priv(wiphy);
@@ -837,6 +869,37 @@ static int sprdwl_vendor_gscan_start(struct wiphy *wiphy,
 	kfree(params);
 
 	return ret;
+}
+
+static int sprdwl_vendor_set_country(struct wiphy *wiphy,
+	struct wireless_dev *wdev, const void  *data, int len)
+{
+#define ANDR_WIFI_ATTRIBUTE_COUNTRY 8
+	int err = 0, rem, type;
+	char country_code[2] = {0};
+	const struct nlattr *iter;
+
+    if ((data == NULL) || (len == 0))
+        return -EINVAL;
+
+	nla_for_each_attr(iter, data, len, rem) {
+		type = nla_type(iter);
+		switch (type) {
+			case ANDR_WIFI_ATTRIBUTE_COUNTRY:
+				country_code[0] = *((char *)nla_data(iter));
+				country_code[1] = *((char *)nla_data(iter) + 1);
+				break;
+			default:
+				wl_err("Unknown type: %d\n", type);
+				return -EINVAL;
+		}
+	}
+
+	wl_info("%s country_code:\"%c%c\" \n", __func__, country_code[0], country_code[1]);
+
+	regulatory_hint(wiphy, country_code);
+
+	return err;
 }
 
 /*stop gscan functon------ CMD ID:21*/
@@ -2112,8 +2175,11 @@ static int sprdwl_vendor_get_support_feature(struct wiphy *wiphy,
 		wl_info("Tx power supported\n");
 		feature |= WIFI_FEATURE_TX_TRANSMIT_POWER;
 	}
-	/*bit 24:Enable/Disable firmware roaming*/
-	if (priv->fw_capa & SPRDWL_CAPA_11R_ROAM_OFFLOAD) {
+	/*bit 24:Enable/Disable control roaming
+	 * CONTROL ROAMING depends on gscan
+	 */
+	if ((priv->fw_capa & SPRDWL_CAPA_11R_ROAM_OFFLOAD) &&
+	    (priv->fw_capa & SPRDWL_CAPA_GSCAN)) {
 		wl_info("ROAMING offload supported\n");
 		feature |= WIFI_FEATURE_CONTROL_ROAMING;
 	}
@@ -3510,6 +3576,42 @@ static int sprdwl_vendor_set_sar_limits(struct wiphy *wiphy,
 #endif
 }
 
+static int sprdwl_vendor_get_akm_suite(struct wiphy *wiphy,
+				       struct wireless_dev *wdev,
+				       const void *data, int len)
+{
+	int ret, akm_len;
+	struct sprdwl_priv *priv = wiphy_priv(wiphy);
+	struct sk_buff *reply;
+	int index = 0;
+	int akm[8] = {0};
+
+	if (priv->extend_feature & SPRDWL_EXTEND_FEATURE_SAE)
+		akm[index++] = WLAN_AKM_SUITE_SAE;
+	if (priv->extend_feature & SPRDWL_EXTEND_FEATURE_OWE)
+		akm[index++] = WLAN_AKM_SUITE_OWE;
+	if (priv->extend_feature & SPRDWL_EXTEND_FEATURE_DPP)
+		akm[index++] = WLAN_CIPHER_SUITE_DPP;
+#if LINUX_VERSION_CODE > KERNEL_VERSION(3, 19, 8)
+	if (priv->extend_feature & SPRDWL_EXTEND_8021X_SUITE_B_192)
+		akm[index++] = WLAN_CIPHER_SUITE_BIP_GMAC_256;
+#endif
+
+	akm_len = index * sizeof(akm[0]);
+	wl_debug("akm suites count = %d\n", index);
+	reply = cfg80211_vendor_cmd_alloc_reply_skb(wiphy, len);
+	if (!reply)
+		return -ENOMEM;
+	if(nla_put(reply, NL80211_ATTR_AKM_SUITES, akm_len, akm)) {
+		kfree_skb(reply);
+		return -EMSGSIZE;
+	}
+	ret = cfg80211_vendor_cmd_reply(reply);
+	if (ret)
+		wiphy_err(wiphy, "reply cmd error\n");
+	return ret;
+}
+
 static int sprdwl_start_offload_packet(struct sprdwl_priv *priv,
 				       u8 vif_ctx_id,
 				       struct nlattr **tb,
@@ -3623,6 +3725,9 @@ const struct wiphy_vendor_command sprdwl_vendor_cmd[] = {
 		},
 		.flags = WIPHY_VENDOR_CMD_NEED_WDEV |
 			WIPHY_VENDOR_CMD_NEED_NETDEV,
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(5, 3, 0))
+		.policy = VENDOR_CMD_RAW_DATA,
+#endif
 		.doit = sprdwl_vendor_roaming_enable,
 	},
 	{/*12*/
@@ -3632,6 +3737,9 @@ const struct wiphy_vendor_command sprdwl_vendor_cmd[] = {
 		},
 		.flags = WIPHY_VENDOR_CMD_NEED_WDEV |
 			WIPHY_VENDOR_CMD_NEED_NETDEV,
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(5, 3, 0))
+		.policy = VENDOR_CMD_RAW_DATA,
+#endif
 		.doit = sprdwl_vendor_nan_enable,
 	},
 	{/*14*/
@@ -3641,6 +3749,9 @@ const struct wiphy_vendor_command sprdwl_vendor_cmd[] = {
 		},
 		.flags = WIPHY_VENDOR_CMD_NEED_WDEV |
 			WIPHY_VENDOR_CMD_NEED_NETDEV,
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(5, 3, 0))
+		.policy = VENDOR_CMD_RAW_DATA,
+#endif
 		.doit = sprdwl_vendor_set_llstat_handler
 	},
 	{/*15*/
@@ -3650,6 +3761,9 @@ const struct wiphy_vendor_command sprdwl_vendor_cmd[] = {
 		},
 		.flags = WIPHY_VENDOR_CMD_NEED_WDEV |
 			WIPHY_VENDOR_CMD_NEED_NETDEV,
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(5, 3, 0))
+		.policy = VENDOR_CMD_RAW_DATA,
+#endif
 		.doit = sprdwl_vendor_get_llstat_handler
 	},
 	{/*16*/
@@ -3659,6 +3773,9 @@ const struct wiphy_vendor_command sprdwl_vendor_cmd[] = {
 		},
 		.flags = WIPHY_VENDOR_CMD_NEED_WDEV |
 			WIPHY_VENDOR_CMD_NEED_NETDEV,
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(5, 3, 0))
+		.policy = VENDOR_CMD_RAW_DATA,
+#endif
 		.doit = sprdwl_vendor_clr_llstat_handler
 	},
 	{/*20*/
@@ -3668,7 +3785,21 @@ const struct wiphy_vendor_command sprdwl_vendor_cmd[] = {
 		},
 		.flags = WIPHY_VENDOR_CMD_NEED_WDEV |
 			 WIPHY_VENDOR_CMD_NEED_NETDEV,
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(5, 3, 0))
+		.policy = VENDOR_CMD_RAW_DATA,
+#endif
 		.doit = sprdwl_vendor_gscan_start,
+	},
+	{
+		{
+			.vendor_id = OUI_GOOGLE,
+			.subcmd = WIFI_SUBCMD_SET_COUNTRY_CODE
+		},
+		.flags = WIPHY_VENDOR_CMD_NEED_WDEV | WIPHY_VENDOR_CMD_NEED_NETDEV,
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(5, 3, 0))
+		.policy = VENDOR_CMD_RAW_DATA,
+#endif
+		.doit = sprdwl_vendor_set_country
 	},
 	{/*21*/
 		{
@@ -3677,6 +3808,9 @@ const struct wiphy_vendor_command sprdwl_vendor_cmd[] = {
 		},
 		.flags = WIPHY_VENDOR_CMD_NEED_WDEV |
 			 WIPHY_VENDOR_CMD_NEED_NETDEV,
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(5, 3, 0))
+		.policy = VENDOR_CMD_RAW_DATA,
+#endif
 		.doit = sprdwl_vendor_gscan_stop,
 	},
 	{/*22*/
@@ -3686,6 +3820,9 @@ const struct wiphy_vendor_command sprdwl_vendor_cmd[] = {
 		},
 		.flags = WIPHY_VENDOR_CMD_NEED_WDEV |
 			 WIPHY_VENDOR_CMD_NEED_NETDEV,
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(5, 3, 0))
+		.policy = VENDOR_CMD_RAW_DATA,
+#endif
 		.doit = sprdwl_vendor_get_channel_list,
 	},
 	{/*23*/
@@ -3695,6 +3832,9 @@ const struct wiphy_vendor_command sprdwl_vendor_cmd[] = {
 		},
 		.flags = WIPHY_VENDOR_CMD_NEED_WDEV |
 			 WIPHY_VENDOR_CMD_NEED_NETDEV,
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(5, 3, 0))
+		.policy = VENDOR_CMD_RAW_DATA,
+#endif
 		.doit = sprdwl_vendor_get_gscan_capabilities,
 	},
 	{/*24*/
@@ -3704,6 +3844,9 @@ const struct wiphy_vendor_command sprdwl_vendor_cmd[] = {
 		},
 		.flags = WIPHY_VENDOR_CMD_NEED_WDEV |
 			 WIPHY_VENDOR_CMD_NEED_NETDEV,
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(5, 3, 0))
+		.policy = VENDOR_CMD_RAW_DATA,
+#endif
 		.doit = sprdwl_vendor_get_cached_gscan_results,
 	},
 	{/*29*/
@@ -3713,6 +3856,9 @@ const struct wiphy_vendor_command sprdwl_vendor_cmd[] = {
 		},
 		.flags = WIPHY_VENDOR_CMD_NEED_WDEV |
 			 WIPHY_VENDOR_CMD_NEED_NETDEV,
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(5, 3, 0))
+		.policy = VENDOR_CMD_RAW_DATA,
+#endif
 		.doit = sprdwl_vendor_set_bssid_hotlist,
 	},
 	{/*30*/
@@ -3722,6 +3868,9 @@ const struct wiphy_vendor_command sprdwl_vendor_cmd[] = {
 		},
 		.flags = WIPHY_VENDOR_CMD_NEED_WDEV |
 			 WIPHY_VENDOR_CMD_NEED_NETDEV,
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(5, 3, 0))
+		.policy = VENDOR_CMD_RAW_DATA,
+#endif
 		.doit = sprdwl_vendor_reset_bssid_hotlist,
 	},
 	{/*32*/
@@ -3731,6 +3880,9 @@ const struct wiphy_vendor_command sprdwl_vendor_cmd[] = {
 		},
 		.flags = WIPHY_VENDOR_CMD_NEED_WDEV |
 			 WIPHY_VENDOR_CMD_NEED_NETDEV,
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(5, 3, 0))
+		.policy = VENDOR_CMD_RAW_DATA,
+#endif
 		.doit = sprdwl_vendor_set_significant_change,
 	},
 	{/*33*/
@@ -3740,6 +3892,9 @@ const struct wiphy_vendor_command sprdwl_vendor_cmd[] = {
 	    },
 		.flags = WIPHY_VENDOR_CMD_NEED_WDEV |
 			 WIPHY_VENDOR_CMD_NEED_NETDEV,
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(5, 3, 0))
+		.policy = VENDOR_CMD_RAW_DATA,
+#endif
 		.doit = sprdwl_vendor_reset_significant_change,
 	},
 	{/*38*/
@@ -3749,6 +3904,9 @@ const struct wiphy_vendor_command sprdwl_vendor_cmd[] = {
 		},
 		.flags = WIPHY_VENDOR_CMD_NEED_WDEV |
 			 WIPHY_VENDOR_CMD_NEED_NETDEV,
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(5, 3, 0))
+		.policy = VENDOR_CMD_RAW_DATA,
+#endif
 		.doit = sprdwl_vendor_get_support_feature,
 	},
 	{/*39*/
@@ -3758,6 +3916,9 @@ const struct wiphy_vendor_command sprdwl_vendor_cmd[] = {
 		},
 		.flags = WIPHY_VENDOR_CMD_NEED_WDEV |
 			 WIPHY_VENDOR_CMD_NEED_NETDEV,
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(5, 3, 0))
+		.policy = VENDOR_CMD_RAW_DATA,
+#endif
 		.doit = sprdwl_vendor_set_mac_oui,
 	},
 	{/*42*/
@@ -3767,6 +3928,9 @@ const struct wiphy_vendor_command sprdwl_vendor_cmd[] = {
 		},
 		.flags = WIPHY_VENDOR_CMD_NEED_WDEV |
 			 WIPHY_VENDOR_CMD_NEED_NETDEV,
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(5, 3, 0))
+		.policy = VENDOR_CMD_RAW_DATA,
+#endif
 		.doit = sprdwl_vendor_get_concurrency_matrix,
 	},
 	{/*55*/
@@ -3776,6 +3940,9 @@ const struct wiphy_vendor_command sprdwl_vendor_cmd[] = {
 		},
 		.flags = WIPHY_VENDOR_CMD_NEED_WDEV |
 			 WIPHY_VENDOR_CMD_NEED_NETDEV,
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(5, 3, 0))
+		.policy = VENDOR_CMD_RAW_DATA,
+#endif
 		.doit = sprdwl_vendor_get_feature,
 	},
 	{/*61*/
@@ -3785,6 +3952,9 @@ const struct wiphy_vendor_command sprdwl_vendor_cmd[] = {
 		},
 		.flags = WIPHY_VENDOR_CMD_NEED_WDEV |
 			 WIPHY_VENDOR_CMD_NEED_NETDEV,
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(5, 3, 0))
+		.policy = VENDOR_CMD_RAW_DATA,
+#endif
 		.doit = sprdwl_vendor_get_driver_info,
 	},
 	{/*62*/
@@ -3794,6 +3964,9 @@ const struct wiphy_vendor_command sprdwl_vendor_cmd[] = {
 		},
 		.flags = WIPHY_VENDOR_CMD_NEED_WDEV |
 			 WIPHY_VENDOR_CMD_NEED_NETDEV,
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(5, 3, 0))
+		.policy = VENDOR_CMD_RAW_DATA,
+#endif
 		.doit = sprdwl_vendor_start_logging,
 	},
 	{/*63*/
@@ -3803,6 +3976,9 @@ const struct wiphy_vendor_command sprdwl_vendor_cmd[] = {
 		},
 		.flags = WIPHY_VENDOR_CMD_NEED_WDEV |
 			 WIPHY_VENDOR_CMD_NEED_NETDEV,
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(5, 3, 0))
+		.policy = VENDOR_CMD_RAW_DATA,
+#endif
 		.doit = sprdwl_vendor_memory_dump,
 	},
 	{/*64*/
@@ -3812,6 +3988,9 @@ const struct wiphy_vendor_command sprdwl_vendor_cmd[] = {
 		},
 		.flags = WIPHY_VENDOR_CMD_NEED_WDEV |
 			WIPHY_VENDOR_CMD_NEED_NETDEV,
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(5, 3, 0))
+		.policy = VENDOR_CMD_RAW_DATA,
+#endif
 		.doit = sprdwl_vendor_set_roam_params,
 	},
 	{/*65*/
@@ -3821,6 +4000,9 @@ const struct wiphy_vendor_command sprdwl_vendor_cmd[] = {
 		},
 		.flags = WIPHY_VENDOR_CMD_NEED_WDEV |
 			WIPHY_VENDOR_CMD_NEED_NETDEV,
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(5, 3, 0))
+		.policy = VENDOR_CMD_RAW_DATA,
+#endif
 		.doit = sprdwl_vendor_set_ssid_hotlist,
 	},
 	{/*66*/
@@ -3830,6 +4012,9 @@ const struct wiphy_vendor_command sprdwl_vendor_cmd[] = {
 		},
 		.flags = WIPHY_VENDOR_CMD_NEED_WDEV |
 			WIPHY_VENDOR_CMD_NEED_NETDEV,
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(5, 3, 0))
+		.policy = VENDOR_CMD_RAW_DATA,
+#endif
 		.doit = sprdwl_vendor_reset_ssid_hotlist,
 	},
 	{/*69*/
@@ -3839,6 +4024,9 @@ const struct wiphy_vendor_command sprdwl_vendor_cmd[] = {
 		},
 		.flags = WIPHY_VENDOR_CMD_NEED_WDEV |
 			 WIPHY_VENDOR_CMD_NEED_NETDEV,
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(5, 3, 0))
+		.policy = VENDOR_CMD_RAW_DATA,
+#endif
 		.doit = sprdwl_vendor_set_epno_list,
 	},
 	{/*70*/
@@ -3848,6 +4036,9 @@ const struct wiphy_vendor_command sprdwl_vendor_cmd[] = {
 		},
 		.flags = WIPHY_VENDOR_CMD_NEED_WDEV |
 			 WIPHY_VENDOR_CMD_NEED_NETDEV,
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(5, 3, 0))
+		.policy = VENDOR_CMD_RAW_DATA,
+#endif
 		.doit = sprdwl_vendor_set_passpoint_list,
 	},
 	{/*71 */
@@ -3857,6 +4048,9 @@ const struct wiphy_vendor_command sprdwl_vendor_cmd[] = {
 		},
 		.flags = WIPHY_VENDOR_CMD_NEED_WDEV |
 			 WIPHY_VENDOR_CMD_NEED_NETDEV,
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(5, 3, 0))
+		.policy = VENDOR_CMD_RAW_DATA,
+#endif
 		.doit = sprdwl_vendor_reset_passpoint_list,
 	},
 	{/*76 */
@@ -3866,6 +4060,9 @@ const struct wiphy_vendor_command sprdwl_vendor_cmd[] = {
 		},
 		.flags = WIPHY_VENDOR_CMD_NEED_WDEV |
 			 WIPHY_VENDOR_CMD_NEED_NETDEV,
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(5, 3, 0))
+		.policy = VENDOR_CMD_RAW_DATA,
+#endif
 		.doit = sprdwl_vendor_get_logger_feature,
 	},
 	{/*77*/
@@ -3875,6 +4072,9 @@ const struct wiphy_vendor_command sprdwl_vendor_cmd[] = {
 		},
 		.flags = WIPHY_VENDOR_CMD_NEED_WDEV |
 			 WIPHY_VENDOR_CMD_NEED_NETDEV,
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(5, 3, 0))
+		.policy = VENDOR_CMD_RAW_DATA,
+#endif
 		.doit = sprdwl_vendor_get_ring_data,
 	},
 	{/*79*/
@@ -3884,6 +4084,9 @@ const struct wiphy_vendor_command sprdwl_vendor_cmd[] = {
 		},
 		.flags = WIPHY_VENDOR_CMD_NEED_WDEV |
 			 WIPHY_VENDOR_CMD_NEED_RUNNING,
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(5, 3, 0))
+		.policy = VENDOR_CMD_RAW_DATA,
+#endif
 		.doit = sprdwl_set_offload_packet,
 	},
 	{/*80*/
@@ -3893,6 +4096,9 @@ const struct wiphy_vendor_command sprdwl_vendor_cmd[] = {
 		},
 		.flags = WIPHY_VENDOR_CMD_NEED_WDEV |
 			 WIPHY_VENDOR_CMD_NEED_NETDEV,
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(5, 3, 0))
+		.policy = VENDOR_CMD_RAW_DATA,
+#endif
 		.doit = sprdwl_vendor_monitor_rssi,
 	},
 	{/*82*/
@@ -3902,6 +4108,9 @@ const struct wiphy_vendor_command sprdwl_vendor_cmd[] = {
 		},
 		.flags = WIPHY_VENDOR_CMD_NEED_WDEV |
 			 WIPHY_VENDOR_CMD_NEED_NETDEV,
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(5, 3, 0))
+		.policy = VENDOR_CMD_RAW_DATA,
+#endif
 		.doit = sprdwl_vendor_enable_nd_offload,
 	},
 	{/*85 */
@@ -3911,6 +4120,9 @@ const struct wiphy_vendor_command sprdwl_vendor_cmd[] = {
 		},
 		.flags = WIPHY_VENDOR_CMD_NEED_WDEV |
 			 WIPHY_VENDOR_CMD_NEED_NETDEV,
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(5, 3, 0))
+		.policy = VENDOR_CMD_RAW_DATA,
+#endif
 		.doit = sprdwl_vendor_get_wake_state,
 	},
 	{/*146 */
@@ -3920,6 +4132,9 @@ const struct wiphy_vendor_command sprdwl_vendor_cmd[] = {
 		},
 		.flags = WIPHY_VENDOR_CMD_NEED_WDEV |
 			 WIPHY_VENDOR_CMD_NEED_NETDEV,
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(5, 3, 0))
+		.policy = VENDOR_CMD_RAW_DATA,
+#endif
 		.doit = sprdwl_vendor_set_sar_limits,
 	},
 
@@ -3931,6 +4146,9 @@ const struct wiphy_vendor_command sprdwl_vendor_cmd[] = {
 		},
 		.flags = WIPHY_VENDOR_CMD_NEED_WDEV |
 			WIPHY_VENDOR_CMD_NEED_NETDEV,
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(5, 3, 0))
+		.policy = VENDOR_CMD_RAW_DATA,
+#endif
 		.doit = sprdwl_vendor_nan_cmds
 	},
 #endif /* NAN_SUPPORT */
@@ -3942,6 +4160,9 @@ const struct wiphy_vendor_command sprdwl_vendor_cmd[] = {
 		},
 		.flags = WIPHY_VENDOR_CMD_NEED_WDEV |
 			WIPHY_VENDOR_CMD_NEED_RUNNING,
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(5, 3, 0))
+		.policy = VENDOR_CMD_RAW_DATA,
+#endif
 		.doit = sprdwl_ftm_get_capabilities
 	},
 	{
@@ -3951,6 +4172,9 @@ const struct wiphy_vendor_command sprdwl_vendor_cmd[] = {
 		},
 		.flags = WIPHY_VENDOR_CMD_NEED_WDEV |
 			WIPHY_VENDOR_CMD_NEED_RUNNING,
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(5, 3, 0))
+		.policy = VENDOR_CMD_RAW_DATA,
+#endif
 		.doit = sprdwl_ftm_start_session
 	},
 	{
@@ -3960,6 +4184,9 @@ const struct wiphy_vendor_command sprdwl_vendor_cmd[] = {
 		},
 		.flags = WIPHY_VENDOR_CMD_NEED_WDEV |
 			WIPHY_VENDOR_CMD_NEED_RUNNING,
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(5, 3, 0))
+		.policy = VENDOR_CMD_RAW_DATA,
+#endif
 		.doit = sprdwl_ftm_abort_session
 	},
 	{
@@ -3969,9 +4196,24 @@ const struct wiphy_vendor_command sprdwl_vendor_cmd[] = {
 		},
 		.flags = WIPHY_VENDOR_CMD_NEED_WDEV |
 			WIPHY_VENDOR_CMD_NEED_RUNNING,
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(5, 3, 0))
+		.policy = VENDOR_CMD_RAW_DATA,
+#endif
 		.doit = sprdwl_ftm_configure_responder
-	}
+	},
 #endif /* RTT_SUPPORT */
+	{
+		{
+		    .vendor_id = OUI_SPREAD,
+		    .subcmd = SPRD_NL80211_VENDOR_SUBCMD_GET_AKM_SUITE
+		},
+		.flags = WIPHY_VENDOR_CMD_NEED_WDEV |
+			WIPHY_VENDOR_CMD_NEED_RUNNING,
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(5, 3, 0))
+		.policy = VENDOR_CMD_RAW_DATA,
+#endif
+		.doit = sprdwl_vendor_get_akm_suite
+	},
 };
 
 static const struct nl80211_vendor_cmd_info sprdwl_vendor_events[] = {
@@ -4096,3 +4338,4 @@ int sprdwl_vendor_deinit(struct wiphy *wiphy)
 
 	return 0;
 }
+#endif /* LINUX_VERSION_CODE >= KERNEL_VERSION(3, 14, 0) */

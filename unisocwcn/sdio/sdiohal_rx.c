@@ -79,6 +79,9 @@ static int sdiohal_rx_list_parser(struct sdiohal_list_t *data_list,
 	int inout = 0, channel = 0;
 	unsigned int parse_len;
 
+	ktime_t kt;
+	u32 sec;
+
 	sdiohal_list_check(data_list, __func__, SDIOHAL_READ);
 
 	node_num = data_list->node_num;
@@ -103,6 +106,21 @@ static int sdiohal_rx_list_parser(struct sdiohal_list_t *data_list,
 					    puh->len);
 				continue;
 			}
+
+			kt = ktime_get();
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 10, 0)
+			sec = (u32)(div_u64(kt, NSEC_PER_SEC));
+#else/*LINUX_VERSION_CODE >= KERNEL_VERSION(4, 10, 0)*/
+			sec = (u32)(div_u64(kt.tv64, NSEC_PER_SEC));
+#endif/*LINUX_VERSION_CODE >= KERNEL_VERSION(4, 10, 0)*/
+			p_data->throughtput_rx.bytes += puh->len;
+			if (p_data->throughtput_rx.sec != sec) {
+				p_data->throughtput_rx.throughtput = (p_data->throughtput_rx.bytes * 8) >> 10;
+				p_data->throughtput_rx.sec = sec;
+				p_data->throughtput_rx.bytes = 0;
+				sdiohal_pr_perf("tp_rx: %d Kbps\n", p_data->throughtput_rx.throughtput);
+			}
+
 			p_data->rx_packer_cnt++;
 			mbuf_node->len = MAX_MBUF_SIZE;
 			sdiohal_data_list_assignment(mbuf_node, puh, channel);
@@ -131,6 +149,9 @@ static int sdiohal_rx_buf_parser(char *data_buf, int valid_len)
 	unsigned char *p = NULL;
 	unsigned int parse_len;
 
+	ktime_t kt;
+	u32 sec;
+
 	puh = (struct sdio_puh_t *)data_buf;
 	for (parse_len = 0; parse_len < valid_len;) {
 		if (puh->eof != 0)
@@ -151,6 +172,21 @@ static int sdiohal_rx_buf_parser(char *data_buf, int valid_len)
 					    puh->len);
 				continue;
 			}
+
+			kt = ktime_get();
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 10, 0)
+			sec = (u32)(div_u64(kt, NSEC_PER_SEC));
+#else/*LINUX_VERSION_CODE >= KERNEL_VERSION(4, 10, 0)*/
+			sec = (u32)(div_u64(kt.tv64, NSEC_PER_SEC));
+#endif/*LINUX_VERSION_CODE >= KERNEL_VERSION(4, 10, 0)*/
+			p_data->throughtput_rx.bytes += puh->len;
+			if (p_data->throughtput_rx.sec != sec) {
+				p_data->throughtput_rx.throughtput = (p_data->throughtput_rx.bytes * 8) >> 10;
+				p_data->throughtput_rx.sec = sec;
+				p_data->throughtput_rx.bytes = 0;
+				sdiohal_pr_perf("tp_rx: %d Kbps\n", p_data->throughtput_rx.throughtput);
+			}
+
 			p_data->rx_packer_cnt++;
 
 			data_list = sdiohal_get_rx_mbuf_node(1);
@@ -254,8 +290,15 @@ read_again:
 			if (ret != 0) {
 				sdiohal_err("adma read fail ret:%d\n", ret);
 				rx_dtbs = 0;
-				if (p_data->irq_type != SDIOHAL_RX_POLLING)
+				if (p_data->irq_type != SDIOHAL_RX_POLLING) {
+					sdiohal_rx_list_free(
+							data_list->mbuf_head,
+							data_list->mbuf_tail,
+							data_list->node_num);
+					kfree(data_list);
+					data_list = NULL;
 					goto submit_list;
+				}
 			}
 			rx_dtbs =  *((unsigned int *)(p_data->dtbs_buf
 				   + (SDIOHAL_DTBS_BUF_SIZE - 4)));
@@ -275,7 +318,8 @@ read_again:
 				      __func__, read_len,
 				      p_data->adma_rx_enable);
 
-			rx_buf = sdiohal_get_rx_free_buf(&alloc_size);
+			/*get buf by readlen, dtbs always is SDIOHAL_BLK_SIZE aligned from sdiohal_rx_adapt_set_dtbs()*/
+			rx_buf = sdiohal_get_rx_free_buf(&alloc_size, read_len);
 			if (!rx_buf) {
 				sdiohal_err("get_rx_free_buf fail, rlen=%d\n",
 					    read_len);

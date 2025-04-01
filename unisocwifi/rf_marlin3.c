@@ -17,11 +17,12 @@
 #include <marlin_platform.h>
 
 #include "sprdwl.h"
+#include "wl_intf.h"
 
 #ifdef CUSTOMIZE_WIFI_CFG_PATH
 #define WIFI_BOARD_CFG_PATH CUSTOMIZE_WIFI_CFG_PATH
 #else
-#define WIFI_BOARD_CFG_PATH "/lib/firmware"
+#define WIFI_BOARD_CFG_PATH "/vendor/etc/"
 #endif
 
 #define CF_TAB(NAME, MEM_OFFSET, TYPE) \
@@ -181,9 +182,9 @@ static struct nvm_name_table g_config_table[] = {
 	CF_TAB("Chain0_149", tx_scale.chain0[34][0], 1),
 	CF_TAB("Chain1_149", tx_scale.chain1[34][0], 1),
 	CF_TAB("Chain0_153", tx_scale.chain0[35][0], 1),
-	CF_TAB("Chain1_153", tx_scale.chain0[35][0], 1),
+	CF_TAB("Chain1_153", tx_scale.chain1[35][0], 1),
 	CF_TAB("Chain0_157", tx_scale.chain0[36][0], 1),
-	CF_TAB("Chain1_157", tx_scale.chain0[36][0], 1),
+	CF_TAB("Chain1_157", tx_scale.chain1[36][0], 1),
 	CF_TAB("Chain0_161", tx_scale.chain0[37][0], 1),
 	CF_TAB("Chain1_161", tx_scale.chain1[37][0], 1),
 	CF_TAB("Chain0_165", tx_scale.chain0[38][0], 1),
@@ -458,6 +459,7 @@ int get_wifi_config_param(struct wifi_conf_t *p)
 	char path_buf[256] = {0};
 	char conf_name[32] = {0};
 	size_t len;
+	enum sprdwl_hw_type hw_type;
 
 	len = strlen(WIFI_BOARD_CFG_PATH);
 	if (len > sizeof(path_buf) - sizeof(conf_name)) {
@@ -481,7 +483,15 @@ int get_wifi_config_param(struct wifi_conf_t *p)
 		return -1;
 	}
 
-	sprintf(conf_name, "wifi_%8x_%dant.ini", chipid, ant);
+	hw_type = get_hwintf_type();
+	if (hw_type == SPRDWL_HW_SDIO) {
+		sprintf(conf_name, "wifi_%8x_%dant.ini", chipid, ant);
+	} else if (hw_type == SPRDWL_HW_PCIE) {
+		sprintf(conf_name, "wifi_%8x_%dant_pcie.ini", chipid, ant);
+	} else if (hw_type == SPRDWL_HW_USB) {
+		sprintf(conf_name, "wifi_%8x_%dant_usb.ini", chipid, ant);
+	}
+
 	strcat(path_buf, conf_name);
 
 	pr_err("wifi ini path = %s\n", path_buf);

@@ -24,9 +24,11 @@
 #include "intf_ops.h"
 #include "vendor.h"
 #include "work.h"
+#if defined(UWE5621_FTR)
 #include "tx_msg.h"
 #include "rx_msg.h"
 #include "wl_core.h"
+#endif
 #include "tcp_ack.h"
 #include "rnd_mac_addr.h"
 #ifdef DFS_MASTER
@@ -64,9 +66,26 @@ void sprdwl_netif_rx(struct sk_buff *skb, struct net_device *ndev)
 	struct sprdwl_intf *intf;
 	struct sprdwl_rx_if *rx_if = NULL;
 
+	ktime_t kt;
+	u32 sec;
+
 	vif = netdev_priv(ndev);
 	intf = (struct sprdwl_intf *)(vif->priv->hw_priv);
 	rx_if = (struct sprdwl_rx_if *)intf->sprdwl_rx;
+
+	kt = ktime_get();
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 10, 0)
+	sec = (u32)(div_u64(kt, NSEC_PER_SEC));
+#else/*LINUX_VERSION_CODE >= KERNEL_VERSION(4, 10, 0)*/
+	sec = (u32)(div_u64(kt.tv64, NSEC_PER_SEC));
+#endif/*LINUX_VERSION_CODE >= KERNEL_VERSION(4, 10, 0)*/
+	vif->throughtput_rx.bytes += skb->len;
+	if (vif->throughtput_rx.sec != sec) {
+		vif->throughtput_rx.throughtput = (vif->throughtput_rx.bytes * 8) >> 10;
+		vif->throughtput_rx.sec = sec;
+		vif->throughtput_rx.bytes = 0;
+		wl_trace("mode: %d, tp_rx: %d Kbps\n", vif->mode, vif->throughtput_rx.throughtput);
+	}
 
 	wl_hex_dump(L_DBG, "RX packet: ", DUMP_PREFIX_OFFSET,
 			     16, 1, skb->data, skb->len, 0);
@@ -90,10 +109,9 @@ void sprdwl_netif_rx(struct sk_buff *skb, struct net_device *ndev)
 	local_bh_disable();
 	netif_receive_skb(skb);
 	local_bh_enable();
-#else
-	skb_orphan(skb);
+#else/*RX_NAPI*/
 	napi_gro_receive(&rx_if->napi_rx, skb);
-#endif
+#endif/*RX_NAPI*/
 }
 
 void sprdwl_stop_net(struct sprdwl_vif *vif)
@@ -144,6 +162,8 @@ static void sprdwl_netflowcontrl_all(struct sprdwl_priv *priv, bool state)
 void sprdwl_net_flowcontrl(struct sprdwl_priv *priv,
 			   enum sprdwl_mode mode, bool state)
 {
+	wl_trace("mode: %d, tp_flowcontrl: %d\n", mode, state);
+
 	if (mode != SPRDWL_MODE_NONE)
 		sprdwl_netflowcontrl_mode(priv, mode, state);
 	else
@@ -193,7 +213,7 @@ static struct sk_buff *sprdwl_fill_pppoe_llc_header(struct sk_buff *skb)
 	return skb;
 }
 #endif
-static int sprdwl_start_xmit(struct sk_buff *skb, struct net_device *ndev)
+static netdev_tx_t sprdwl_start_xmit(struct sk_buff *skb, struct net_device *ndev)
 {
 	struct sprdwl_vif *vif = netdev_priv(ndev);
 	int ret = 0;
@@ -202,10 +222,21 @@ static int sprdwl_start_xmit(struct sk_buff *skb, struct net_device *ndev)
 	struct sprdwl_eap_hdr *eap_temp;
 	struct sprdwl_intf *intf;
 
+	ktime_t kt;
+	u32 sec;
+
 	intf = (struct sprdwl_intf *)vif->priv->hw_priv;
 
 	if (intf->cp_asserted == 1 ||
 		intf->suspend_mode != SPRDWL_PS_RESUMED) {
+		dev_kfree_skb(skb);
+		return NETDEV_TX_OK;
+	}
+
+	if (vif->mode == SPRDWL_MODE_STATION && vif->sm_state != SPRDWL_CONNECTED) {
+		wl_info("%s, %d, sta is not connect, should not send this data\n", __func__, __LINE__);
+		wl_hex_dump(L_INFO, "TX packet: ", DUMP_PREFIX_OFFSET,
+			     16, 1, skb->data, skb->len, 0);
 		dev_kfree_skb(skb);
 		return NETDEV_TX_OK;
 	}
@@ -257,7 +288,22 @@ static int sprdwl_start_xmit(struct sk_buff *skb, struct net_device *ndev)
 	if (vif->priv->fw_stat[vif->mode] != SPRDWL_INTF_OPEN) {
 		wl_err_ratelimited("%s, %d, should not send this data\n",
 		       __func__, __LINE__);
-		return NETDEV_TX_BUSY;
+		dev_kfree_skb(skb);
+		return NETDEV_TX_OK;
+	}
+
+	kt = ktime_get();
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 10, 0)
+	sec = (u32)(div_u64(kt, NSEC_PER_SEC));
+#else/*LINUX_VERSION_CODE >= KERNEL_VERSION(4, 10, 0)*/
+	sec = (u32)(div_u64(kt.tv64, NSEC_PER_SEC));
+#endif/*LINUX_VERSION_CODE >= KERNEL_VERSION(4, 10, 0)*/
+	vif->throughtput_tx.bytes += skb->len;
+	if (vif->throughtput_tx.sec != sec) {
+		vif->throughtput_tx.throughtput = (vif->throughtput_tx.bytes * 8) >> 10;
+		vif->throughtput_tx.sec = sec;
+		vif->throughtput_tx.bytes = 0;
+		wl_trace("mode: %d, tp_tx: %d Kbps\n", vif->mode, vif->throughtput_tx.throughtput);
 	}
 
 	msg = sprdwl_intf_get_msg_buf(vif->priv,
@@ -267,6 +313,7 @@ static int sprdwl_start_xmit(struct sk_buff *skb, struct net_device *ndev)
 	if (!msg) {
 		wl_err("%s, %d, get msg bug failed\n", __func__, __LINE__);
 		ndev->stats.tx_fifo_errors++;
+		dev_kfree_skb(skb);
 		return NETDEV_TX_BUSY;
 	}
 
@@ -290,7 +337,12 @@ static int sprdwl_start_xmit(struct sk_buff *skb, struct net_device *ndev)
 		return NETDEV_TX_OK;
 	}
 #endif
+#if !defined(UWE5621_FTR)
+	/* sprdwl_send_data: offset use 2 for cp bytes align */
+	ret = sprdwl_send_data(vif, msg, skb, 2);
+#else
 	ret = sprdwl_send_data(vif, msg, skb, 0);
+#endif /* UWE5621_FTR */
 	if (ret) {
 		wl_ndev_log(L_ERR, ndev, "%s drop msg due to TX Err\n", __func__);
 		/* FIXME as debug sdiom later, here just drop the msg
@@ -318,7 +370,12 @@ out:
 static int sprdwl_init(struct net_device *ndev)
 {
 	struct sprdwl_vif *vif = netdev_priv(ndev);
+#ifdef STA_SOFTAP_SCC_MODE
+	enum nl80211_iftype type = vif->wdev.iftype;
 
+	if (type == NL80211_IFTYPE_AP)
+		return 0;
+#endif
 	/* initialize firmware */
 	return sprdwl_init_fw(vif);
 }
@@ -326,6 +383,12 @@ static int sprdwl_init(struct net_device *ndev)
 static void sprdwl_uninit(struct net_device *ndev)
 {
 	struct sprdwl_vif *vif = netdev_priv(ndev);
+#ifdef STA_SOFTAP_SCC_MODE
+	enum nl80211_iftype type = vif->wdev.iftype;
+
+	if (type == NL80211_IFTYPE_AP)
+		return;
+#endif
 
 	sprdwl_uninit_fw(vif);
 }
@@ -361,8 +424,11 @@ static struct net_device_stats *sprdwl_get_stats(struct net_device *ndev)
 {
 	return &ndev->stats;
 }
-
+#if KERNEL_VERSION(5, 6, 0) <= LINUX_VERSION_CODE
+static void sprdwl_tx_timeout(struct net_device *ndev, unsigned int txqueue)
+#else
 static void sprdwl_tx_timeout(struct net_device *ndev)
+#endif
 {
 	wl_ndev_log(L_DBG, ndev, "%s\n", __func__);
 #if LINUX_VERSION_CODE < KERNEL_VERSION(4, 7, 0)
@@ -688,16 +754,25 @@ static int sprdwl_set_power_save(struct net_device *ndev, struct ifreq *ifr)
 	struct android_wifi_priv_cmd priv_cmd;
 	char *command = NULL;
 	int ret = 0, skip, value;
+	int max_len = 0;
 
 	if (!ifr->ifr_data)
 		return -EINVAL;
 	if (copy_from_user(&priv_cmd, ifr->ifr_data, sizeof(priv_cmd)))
 		return -EFAULT;
 
-	command = kmalloc(priv_cmd.total_len, GFP_KERNEL);
+	/*add length check to avoid invalid NULL ptr*/
+	if (!priv_cmd.total_len) {
+		wl_ndev_log(L_INFO, ndev, "%s: priv cmd total len is invalid\n", __func__);
+		return -EINVAL;
+	}
+
+	/* fix max_len for mv300(total_len = 4096) */
+	max_len = priv_cmd.total_len > MAX_PRIV_CMD_LEN ? MAX_PRIV_CMD_LEN : priv_cmd.total_len;
+	command = kmalloc(max_len, GFP_KERNEL);
 	if (!command)
 		return -ENOMEM;
-	if (copy_from_user(command, priv_cmd.buf, priv_cmd.total_len)) {
+	if (copy_from_user(command, priv_cmd.buf, max_len)) {
 		ret = -EFAULT;
 		goto out;
 	}
@@ -738,6 +813,7 @@ static int sprdwl_set_tlv(struct net_device *ndev, struct ifreq *ifr)
 	struct android_wifi_priv_cmd priv_cmd;
 	struct sprdwl_tlv_data *tlv;
 	int ret;
+	int max_len = 0;
 
 	if (!ifr->ifr_data)
 		return -EINVAL;
@@ -748,11 +824,12 @@ static int sprdwl_set_tlv(struct net_device *ndev, struct ifreq *ifr)
 	if (priv_cmd.total_len < sizeof(*tlv))
 		return -EINVAL;
 
-	tlv = kmalloc(priv_cmd.total_len, GFP_KERNEL);
+	max_len = priv_cmd.total_len > MAX_PRIV_CMD_LEN ? MAX_PRIV_CMD_LEN : priv_cmd.total_len;
+	tlv = kmalloc(max_len, GFP_KERNEL);
 	if (!tlv)
 		return -ENOMEM;
 
-	if (copy_from_user(tlv, priv_cmd.buf, priv_cmd.total_len)) {
+	if (copy_from_user(tlv, priv_cmd.buf, max_len)) {
 		ret = -EFAULT;
 		goto out;
 	}
@@ -786,7 +863,7 @@ static int sprdwl_set_tlv(struct net_device *ndev, struct ifreq *ifr)
 		}
 	}
 
-	ret = sprdwl_set_tlv_data(priv, vif->ctx_id, tlv, priv_cmd.total_len);
+	ret = sprdwl_set_tlv_data(priv, vif->ctx_id, tlv, max_len);
 	if (ret)
 		wl_ndev_log(L_ERR, ndev, "%s set tlv(type=%#x) error\n",
 			   __func__, tlv->type);
@@ -1144,37 +1221,20 @@ random_mac:
 	return 0;
 }
 
-#ifdef CONFIG_SUNXI_ADDR_MGT
-extern int get_wifi_custom_mac_address(char *addr_str);
-#endif
 static void sprdwl_set_mac_addr(struct sprdwl_vif *vif, u8 *pending_addr,
 				u8 *addr)
 {
 	int default_mac_valid = 0;
 	enum nl80211_iftype type = vif->wdev.iftype;
 	struct sprdwl_priv *priv = vif->priv;
-	u8 addr_str[20];
-	u8 custom_mac[6] = {0x00, 0x00, 0x00, 0x00, 0x00, 0x00};
-	int ret;
-	(void)addr_str;
-	(void)ret;
 
 	if (!addr) {
 		return;
-	}
-#ifdef CONFIG_SUNXI_ADDR_MGT
-	ret = get_wifi_custom_mac_address(addr_str);
-	if (ret != -1) {
-		sscanf(addr_str, "%02hhx:%02hhx:%02hhx:%02hhx:%02hhx:%02hhx",
-				&custom_mac[0], &custom_mac[1], &custom_mac[2],
-				&custom_mac[3], &custom_mac[4], &custom_mac[5]);
-	}
-#endif
-
-	if (is_valid_ether_addr(custom_mac)) {
-		ether_addr_copy(addr, custom_mac);
 	} else if (priv && is_valid_ether_addr(priv->mac_addr)) {
 		ether_addr_copy(addr, priv->mac_addr);
+#ifdef STA_SOFTAP_SCC_MODE
+		default_mac_valid = 1;
+#endif
 	} else if (pending_addr && is_valid_ether_addr(pending_addr)) {
 		ether_addr_copy(addr, pending_addr);
 	} else if (priv && is_valid_ether_addr(priv->default_mac)) {
@@ -1184,6 +1244,10 @@ static void sprdwl_set_mac_addr(struct sprdwl_vif *vif, u8 *pending_addr,
 		sprdwl_get_mac_from_file(vif, addr);
 	}
 
+	if (!priv) {
+		netdev_err(vif->ndev, "%s get pirv failed\n", __func__);
+		return;
+	}
 	switch (type) {
 	case NL80211_IFTYPE_STATION:
 		ether_addr_copy(priv->default_mac, addr);
@@ -1392,18 +1456,18 @@ static void sprdwl_deinit_vif(struct sprdwl_vif *vif)
 	/* We have to clear all the work which
 	 * is belong to the vif we are going to remove.
 	 */
-#ifdef SYNC_DISCONNECT
+
 	if (vif->sm_state == SPRDWL_CONNECTING ||
 	    vif->sm_state == SPRDWL_CONNECTED  ||
 	    vif->sm_state == SPRDWL_DISCONNECTING)
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 2, 0)
 		cfg80211_disconnected(vif->ndev, 3,
 		NULL, 0, false, GFP_KERNEL);
-#else
+#else/*LINUX_VERSION_CODE >= KERNEL_VERSION(4, 2, 0)*/
 		cfg80211_disconnected(vif->ndev, 3,
 		NULL, 0, GFP_KERNEL);
-#endif
-#endif
+#endif/*LINUX_VERSION_CODE >= KERNEL_VERSION(4, 2, 0)*/
+
 	sprdwl_cancle_work(vif->priv, vif);
 
 	if (vif->ref > 0) {
@@ -1525,7 +1589,7 @@ static struct sprdwl_vif *sprdwl_register_netdev(struct sprdwl_priv *priv,
 #endif
 #ifdef RX_NAPI
 	ndev->features |= NETIF_F_GRO;
-#endif
+#endif/*RX_NAPI*/
 	ndev->features |= NETIF_F_SG;
 	SET_NETDEV_DEV(ndev, wiphy_dev(priv->wiphy));
 
@@ -1581,10 +1645,9 @@ struct wireless_dev *sprdwl_add_iface(struct sprdwl_priv *priv,
 		wl_err("failed to add iface '%s'\n", name);
 		return (void *)vif;
 	}
-#ifdef SYNC_DISCONNECT
-	init_waitqueue_head(&vif->disconnect_wq);
-	atomic_set(&vif->sync_disconnect_event, 0);
-#endif
+
+	init_completion(&vif->disconnect_completed);
+
 #ifdef DFS_MASTER
 	sprdwl_init_dfs_master(vif);
 #endif
@@ -1641,7 +1704,6 @@ static void sprdwl_init_debugfs(struct sprdwl_priv *priv)
 
 int sprdwl_core_init(struct device *dev, struct sprdwl_priv *priv)
 {
-	u8 *efuse_mac_addr = NULL;
 	struct wiphy *wiphy = priv->wiphy;
 	struct wireless_dev *wdev;
 	int ret;
@@ -1653,11 +1715,13 @@ int sprdwl_core_init(struct device *dev, struct sprdwl_priv *priv)
 	sprdwl_download_ini(priv);
 	sprdwl_tcp_ack_init(priv);
 	sprdwl_get_fw_info(priv);
-#ifdef RTT_SUPPORT
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(3, 14, 0)) && defined(RTT_SUPPORT)
 	sprdwl_ftm_init(priv);
-#endif /* RTT_SUPPORT */
+#endif /* (LINUX_VERSION_CODE >= KERNEL_VERSION(3, 14, 0)) && defined(RTT_SUPPORT) */
 	sprdwl_setup_wiphy(wiphy, priv);
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(3, 14, 0)
 	sprdwl_vendor_init(wiphy);
+#endif /* LINUX_VERSION_CODE >= KERNEL_VERSION(3, 14, 0) */
 	set_wiphy_dev(wiphy, dev);
 	ret = wiphy_register(wiphy);
 	if (ret) {
@@ -1666,8 +1730,6 @@ int sprdwl_core_init(struct device *dev, struct sprdwl_priv *priv)
 	}
 	sprdwl_init_debugfs(priv);
 
-	if (is_valid_ether_addr(priv->mac_addr))
-		efuse_mac_addr = priv->mac_addr;
 	rtnl_lock();
 	wdev = sprdwl_add_iface(priv, "wlan%d", NL80211_IFTYPE_STATION, NULL);
 	rtnl_unlock();
@@ -1676,6 +1738,17 @@ int sprdwl_core_init(struct device *dev, struct sprdwl_priv *priv)
 		ret = -ENXIO;
 		goto out;
 	}
+
+#ifdef STA_SOFTAP_SCC_MODE
+	rtnl_lock();
+	wdev = sprdwl_add_iface(priv, "wlan%d", NL80211_IFTYPE_AP, NULL);
+	rtnl_unlock();
+	if (IS_ERR(wdev)) {
+		wiphy_unregister(wiphy);
+		ret = -ENXIO;
+		goto out;
+	}
+#endif
 
 #ifdef CONFIG_P2P_INTF
 	rtnl_lock();
@@ -1689,11 +1762,12 @@ int sprdwl_core_init(struct device *dev, struct sprdwl_priv *priv)
 #endif
 
 #ifdef RX_NAPI
-	sprdwl_rx_napi_init(wdev->netdev,
-			    ((struct sprdwl_intf *)priv->hw_priv));
-#endif
+	sprdwl_rx_napi_init(wdev->netdev, ((struct sprdwl_intf *)priv->hw_priv));
+#endif/*RX_NAPI*/
 
+#if defined(UWE5621_FTR)
 	qos_enable(1);
+#endif
 	sprdwl_init_npi();
 	ret = register_inetaddr_notifier(&sprdwl_inetaddr_cb);
 	if (ret)
@@ -1726,15 +1800,22 @@ int sprdwl_core_deinit(struct sprdwl_priv *priv)
 	if (priv->fw_capa & SPRDWL_CAPA_NS_OFFLOAD)
 		unregister_inet6addr_notifier(&sprdwl_inet6addr_cb);
 	sprdwl_deinit_npi();
+#if defined(UWE5621_FTR)
 	qos_enable(0);
+#endif
+#ifdef RX_NAPI
+	sprdwl_rx_napi_deinit((struct sprdwl_intf *)priv->hw_priv);
+#endif/*RX_NAPI*/
 	sprdwl_del_all_ifaces(priv);
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(3, 14, 0)
 	sprdwl_vendor_deinit(priv->wiphy);
+#endif /* LINUX_VERSION_CODE >= KERNEL_VERSION(3, 14, 0) */
 	wiphy_unregister(priv->wiphy);
 	sprdwl_cmd_wake_upall();
 	sprdwl_tcp_ack_deinit(priv);
-#ifdef RTT_SUPPORT
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(3, 14, 0)) && defined(RTT_SUPPORT)
 	sprdwl_ftm_deinit(priv);
-#endif /* RTT_SUPPORT */
+#endif /* (LINUX_VERSION_CODE >= KERNEL_VERSION(3, 14, 0)) && defined(RTT_SUPPORT)*/
 	trace_info_deinit();
 
 	return 0;

@@ -6,8 +6,7 @@
 #include <linux/scatterlist.h>
 #include <linux/slab.h>
 #include <linux/version.h>
-#if KERNEL_VERSION(4, 14, 0) <= LINUX_VERSION_CODE
-#include <linux/wakelock.h>
+#if KERNEL_VERSION(4, 11, 0) <= LINUX_VERSION_CODE
 #include <uapi/linux/sched/types.h>
 #else
 #include <linux/sched.h>
@@ -54,7 +53,7 @@ extern long int sdiohal_log_level;
 	} while (0)
 #define sdiohal_pr_perf(fmt, args...) \
 	do { if (sdiohal_log_level & SDIOHAL_PERF_LEVEL) \
-		pr_info(fmt, ## args); \
+		trace_printk("sdiohal:" fmt, ## args); \
 	} while (0)
 #else
 #define sdiohal_normal(fmt, args...)
@@ -126,12 +125,24 @@ extern long int sdiohal_log_level;
 #define SDIOHAL_RX_NODE_NUM (12 << 10)
 
 /* for 64 bit sys */
+#ifdef CONFIG_CUSTOMIZE_64_BIT_RX_RECVBUF_LEN
+#define SDIOHAL_RX_RECVBUF_LEN (CONFIG_CUSTOMIZE_64_BIT_RX_RECVBUF_LEN << 10)
+#else
 #define SDIOHAL_RX_RECVBUF_LEN (MAX_CHAIN_NODE_NUM * MAX_MBUF_SIZE)
+#endif
 #define SDIOHAL_FRAG_PAGE_MAX_ORDER \
 	get_order(SDIOHAL_RX_RECVBUF_LEN)
 
 /* for 32 bit sys */
-#define SDIOHAL_32_BIT_RX_RECVBUF_LEN (16 << 10)
+#ifdef CONFIG_CUSTOMIZE_32_BIT_RX_RECVBUF_LEN
+#define SDIOHAL_32_BIT_RX_RECVBUF_LEN (CONFIG_CUSTOMIZE_32_BIT_RX_RECVBUF_LEN << 10)
+#else
+#ifdef CONFIG_AML_BOARD
+#define SDIOHAL_32_BIT_RX_RECVBUF_LEN (128 << 10)
+#else//CONFIG_AML_BOARD
+#define SDIOHAL_32_BIT_RX_RECVBUF_LEN (32 << 10)
+#endif //CONFIG_AML_BOARD
+#endif
 #define SDIOHAL_FRAG_PAGE_MAX_ORDER_32_BIT \
 	get_order(SDIOHAL_32_BIT_RX_RECVBUF_LEN)
 
@@ -253,8 +264,15 @@ extern long int sdiohal_log_level;
 #define WCN_CARD_EXIST(xmit) \
 	(atomic_read(xmit) < SDIOHAL_REMOVE_CARD_VAL)
 
+/*refer from struct page_frag*/
+struct sprd_page_frag {
+	struct page *page;
+	__u32 offset;
+	__u32 size;
+};
+
 struct sdiohal_frag_mg {
-	struct page_frag frag;
+	struct sprd_page_frag frag;
 	unsigned int pagecnt_bias;
 };
 
@@ -288,18 +306,21 @@ struct sdiohal_data_bak_t {
 	unsigned char data_bk[SDIOHAL_PRINTF_LEN];
 };
 
+struct sdiohal_throughtput {
+	u64 bytes;
+	u32 sec;
+	u32 throughtput;
+};
+
 struct sdiohal_data_t {
 	struct task_struct *tx_thread;
 	struct task_struct *rx_thread;
 	struct completion tx_completed;
 	struct completion rx_completed;
-#if KERNEL_VERSION(4, 14, 0) <= LINUX_VERSION_CODE
-	struct wake_lock tx_wl;
-	struct wake_lock rx_wl;
-#else
-	struct wakeup_source tx_ws;
-	struct wakeup_source rx_ws;
-#endif
+	/*wakeup_source pointer*/
+	struct wakeup_source *tx_ws;
+	struct wakeup_source *rx_ws;
+
 	atomic_t tx_wake_flag;
 	atomic_t rx_wake_flag;
 #ifdef CONFIG_WCN_SLP
@@ -366,11 +387,9 @@ struct sdiohal_data_t {
 	struct timespec tm_begin_irq;
 	struct timespec tm_end_irq;
 
-#if KERNEL_VERSION(4, 14, 0) <= LINUX_VERSION_CODE
-	struct wake_lock scan_wl;
-#else
-	struct wakeup_source scan_ws;
-#endif
+	/*wakeup_source pointer*/
+	struct wakeup_source *scan_ws;
+	
 	struct completion scan_done;
 	struct completion remove_done;
 	unsigned int sdio_int_reg;
@@ -384,9 +403,12 @@ struct sdiohal_data_t {
 #endif
 	int printlog_txchn;
 	int printlog_rxchn;
+	struct sdiohal_throughtput throughtput_tx;
+	struct sdiohal_throughtput throughtput_rx;
 };
 
 struct sdiohal_data_t *sdiohal_get_data(void);
+unsigned char sdiohal_get_wl_wake_host_en(void);
 unsigned char sdiohal_get_tx_mode(void);
 unsigned char sdiohal_get_rx_mode(void);
 unsigned char sdiohal_get_irq_type(void);
@@ -417,7 +439,7 @@ void sdiohal_callback_lock(struct mutex *mutex);
 void sdiohal_callback_unlock(struct mutex *mutex);
 
 /* for sleep */
-#ifdef CONFIG_WCN_SLP
+#if 0
 void sdiohal_cp_tx_sleep(enum slp_subsys subsys);
 void sdiohal_cp_tx_wakeup(enum slp_subsys subsys);
 void sdiohal_cp_rx_sleep(enum slp_subsys subsys);
@@ -457,7 +479,7 @@ struct sdiohal_list_t *sdiohal_get_rx_mbuf_list(int num);
 struct sdiohal_list_t *sdiohal_get_rx_mbuf_node(int num);
 int sdiohal_rx_list_dispatch(void);
 struct sdiohal_list_t *sdiohal_get_rx_channel_list(int channel);
-void *sdiohal_get_rx_free_buf(unsigned int *alloc_size);
+void *sdiohal_get_rx_free_buf(unsigned int *alloc_size, unsigned int read_len);
 void sdiohal_tx_init_retrybuf(void);
 int sdiohal_misc_init(void);
 void sdiohal_misc_deinit(void);

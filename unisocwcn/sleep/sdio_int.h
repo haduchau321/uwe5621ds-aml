@@ -2,7 +2,6 @@
 #define __SDIO_INT_H__
 #include <linux/device.h>
 #include <linux/version.h>
-#include <linux/pm_wakeup.h>
 
 #define SLP_MGR_HEADER "[slp_mgr]"
 
@@ -103,11 +102,9 @@ struct sdio_int_t {
 	unsigned int pub_int_clr0;
 	unsigned int pub_int_sts0;
 	PUB_INT_ISR pub_int_cb[PUB_INT_MAX];
-#if KERNEL_VERSION(4, 14, 0) <= LINUX_VERSION_CODE
-	struct wake_lock pub_int_wakelock;
-#else
-	struct wakeup_source pub_int_ws;
-#endif
+	/*wakeup_source pointer*/
+	struct wakeup_source *pub_int_ws;
+
 	struct completion pub_int_completion;
 	unsigned int pub_int_num;
 	/* 1: power on, 0: power off */
@@ -129,20 +126,4 @@ int sdio_pub_int_RegCb(enum PUB_INT_BIT bit,
 void sdio_pub_int_poweron(bool state);
 int sdio_pub_int_init(int irq);
 int sdio_pub_int_deinit(void);
-
-
-struct wakeup_source *ws;
-
-// Khởi tạo
-ws = wakeup_source_register(NULL, "my_wakelock");
-
-// Kích hoạt wakelock
-__pm_stay_awake(ws);
-
-// Giải phóng wakelock
-__pm_relax(ws);
-
-// Giải phóng tài nguyên
-wakeup_source_unregister(ws);
-
 #endif

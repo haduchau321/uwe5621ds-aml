@@ -78,7 +78,8 @@ int slp_mgr_wakeup(enum slp_subsys subsys)
 	mutex_lock(&(slp_mgr.wakeup_lock));
 	if (STAY_SLPING == (atomic_read(&(slp_mgr.cp2_state)))) {
 		ap_wakeup_cp();
-		time_end = ktime_add_ms(ktime_get(), 10);
+
+		time_end = ktime_add_ns(ktime_get(), 30 * NSEC_PER_MSEC);
 #ifndef CONFIG_CHECK_DRIVER_BY_CHIPID
 #ifdef CONFIG_UWE5623
 		/*select btwf_slp_status*/

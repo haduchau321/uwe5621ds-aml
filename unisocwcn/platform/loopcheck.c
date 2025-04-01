@@ -51,6 +51,7 @@ int at_cmd_send(char *buf, unsigned int len)
 }
 
 #ifdef CONFIG_WCN_LOOPCHECK
+
 static void loopcheck_work_queue(struct work_struct *work)
 {
 	int ret;

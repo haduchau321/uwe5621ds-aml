@@ -495,7 +495,7 @@ static void get_cmd_par(char *str, struct nvm_cali_cmd *cmd)
 			} else {
 				if (kstrtos64(tmp, 0, &val))
 					pr_err("kstrtos64 %s: error is %d\n",
-					       tmp, kstrtos64(tmp, 0, &val));
+						   tmp, kstrtos64(tmp, 0, &val));
 				cmd->par[cmd->num] = val & 0xFFFFFFFFFFFFFFFF;
 				cmd->num++;
 			}
@@ -653,7 +653,7 @@ int get_connectivity_config_param(struct wifi_config_t *p)
 		} else {
 			filp_close(file, NULL);
 			if ((wcn_get_aon_chip_id() != WCN_SHARKLE_CHIP_AD) &&
-			    (wcn_get_aon_chip_id() != WCN_PIKE2_CHIP_AB))
+				(wcn_get_aon_chip_id() != WCN_PIKE2_CHIP_AB))
 				path = VENDOR_WIFI_CONFIG_FILE;
 		}
 #endif
@@ -689,7 +689,7 @@ int get_connectivity_cali_param(struct wifi_cali_t *p)
 		} else {
 			filp_close(file, NULL);
 			if ((wcn_get_aon_chip_id() != WCN_SHARKLE_CHIP_AD) &&
-			    (wcn_get_aon_chip_id() != WCN_PIKE2_CHIP_AB))
+				(wcn_get_aon_chip_id() != WCN_PIKE2_CHIP_AB))
 				path = VENDOR_WIFI_CALI_FILE;
 		}
 #endif
@@ -725,7 +725,6 @@ static void cali_save_file(char *path, struct wifi_cali_t *p)
 	struct file *fp;
 	int i, j;
 
-	set_fs(KERNEL_DS);
 
 	fp = filp_open(path, O_RDWR | O_CREAT | O_TRUNC, 0771);
 	if (IS_ERR_OR_NULL(fp)) {
@@ -873,10 +872,10 @@ static void cali_save_file(char *path, struct wifi_cali_t *p)
 
 		for (i = 0; i < TXPOWER_GAIN_MAPPING_LEN - 1; i++)
 			DUMP(fp, " %d,",
-			     p->txpower_cali.txpower_gain_mapping_table[j][i]);
+				 p->txpower_cali.txpower_gain_mapping_table[j][i]);
 		DUMP(fp, " %d\r\n",
-		     p->txpower_cali.txpower_gain_mapping_table[j]
-		     [TXPOWER_GAIN_MAPPING_LEN - 1]);
+			 p->txpower_cali.txpower_gain_mapping_table[j]
+			 [TXPOWER_GAIN_MAPPING_LEN - 1]);
 	}
 
 	DUMP(fp, "txpower_subcarries_compensation_flag = %d\r\n",
@@ -890,10 +889,10 @@ static void cali_save_file(char *path, struct wifi_cali_t *p)
 
 		for (i = 0; i < TXPOWER_SUBCARRIES_LEN - 1; i++)
 			DUMP(fp, " %d,",
-			     p->txpower_cali.txpower_subcarries_channel[j][i]);
+				 p->txpower_cali.txpower_subcarries_channel[j][i]);
 		DUMP(fp, " %d\r\n",
-		     p->txpower_cali.txpower_subcarries_channel[j]
-		     [TXPOWER_SUBCARRIES_LEN - 1]);
+			 p->txpower_cali.txpower_subcarries_channel[j]
+			 [TXPOWER_SUBCARRIES_LEN - 1]);
 	}
 
 	DUMP(fp, "txpower_psat_trace_value = %d, %d, %d, %d\r\n",
@@ -932,9 +931,9 @@ static void cali_save_file(char *path, struct wifi_cali_t *p)
 		DUMP(fp, "channel%d_dpd_cali_table =", j + 1);
 		for (i = 0; i < CHANNEL_DPD_CALI_LEN - 1; i++)
 			DUMP(fp, " 0x%x,",
-			     p->dpd_cali.channel_dpd_cali_table[j][i]);
+				 p->dpd_cali.channel_dpd_cali_table[j][i]);
 		DUMP(fp, " 0x%x\r\n", p->dpd_cali.channel_dpd_cali_table[j]
-		     [CHANNEL_DPD_CALI_LEN - 1]);
+			 [CHANNEL_DPD_CALI_LEN - 1]);
 	}
 
 	DUMP(fp, "dpd_reserved   = 0x%x, 0x%x, 0x%x, 0x%x\r\n",
@@ -979,7 +978,6 @@ static void cali_save_file(char *path, struct wifi_cali_t *p)
 
 
 	filp_close(fp, NULL);
-	set_fs(USER_DS);
 
 }
 

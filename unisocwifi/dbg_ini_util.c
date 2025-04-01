@@ -205,7 +205,7 @@ bool is_valid_channel(struct wiphy *wiphy, u16 chn)
 int sprdwl_dbg_new_beacon_head(const u8 *beacon_head, int head_len, u8 *new_head,  u16 chn)
 {
 	int len;
-	u8 *ies = NULL, *new_ies = NULL;
+	u8 *ies = NULL, *new_ies =NULL;
 	struct ieee80211_mgmt *mgmt;
 	u8 supp_5g_rates[8] = {0x8c, 0x12, 0x98, 0x24, 0xb0, 0x48, 0x60, 0x6c};
 	u8 supp_24g_rates[8] = {0x82, 0x84, 0x8b, 0x96, 0x0c, 0x12, 0x18, 0x24};
@@ -224,25 +224,25 @@ int sprdwl_dbg_new_beacon_head(const u8 *beacon_head, int head_len, u8 *new_head
 
 	while (len > 2) {
 		switch (ies[0]) {
-		case WLAN_EID_SUPP_RATES:
-			*new_ies++ = WLAN_EID_SUPP_RATES;
-			*new_ies++ = 8;
-			if (chn > 14)
-				memcpy(new_ies, supp_5g_rates, 8);
-			else
-				memcpy(new_ies, supp_24g_rates, 8);
-			new_ies += 8;
-			break;
+			case WLAN_EID_SUPP_RATES:
+				*new_ies++ = WLAN_EID_SUPP_RATES;
+				*new_ies++ = 8;
+				if (chn > 14)
+					memcpy(new_ies, supp_5g_rates, 8);
+				else
+					memcpy(new_ies, supp_24g_rates, 8);
+				new_ies += 8;
+				break;
 
-		case WLAN_EID_DS_PARAMS:
-			memcpy(new_ies, ies, ies[1] + 2);
-			new_ies[2] = chn;
-			new_ies += ies[1] + 2;
-			break;
-		default:
-			memcpy(new_ies, ies, ies[1] + 2);
-			new_ies += ies[1] + 2;
-			break;
+			case WLAN_EID_DS_PARAMS:
+				memcpy(new_ies, ies, ies[1] + 2);
+				new_ies[2] = chn;
+				new_ies += ies[1] + 2;
+				break;
+			default:
+				memcpy(new_ies, ies, ies[1] + 2);
+				new_ies += ies[1] + 2;
+				break;
 		}
 
 		len -= ies[1] + 2;
@@ -274,32 +274,32 @@ int sprdwl_dbg_new_beacon_tail(const u8 *beacon_tail, int tail_len, u8 *new_tail
 	}
 
 	while (tail_len > 2) {
-		switch (ies[0]) {
-		case WLAN_EID_ERP_INFO:
-			break;
-		case WLAN_EID_EXT_SUPP_RATES:
-			*tail++ = WLAN_EID_EXT_SUPP_RATES;
-			if (chn <= 14) {
-				len = sizeof(ext_24g_rates);
-				*tail++ = len;
-				memcpy(tail, ext_24g_rates, len);
-				tail += len;
-			} else {
-				len = sizeof(ext_5g_rates);
-				*tail++ = len;
-				memcpy(tail, ext_5g_rates, len);
-				tail += len;
-			}
-			break;
-		case WLAN_EID_HT_OPERATION:
-			memcpy(tail, ies, ies[1] + 2);
-			tail[2] = chn;
-			tail += ies[1] + 2;
-			break;
-		default:
-			memcpy(tail, ies, ies[1] + 2);
-			tail += ies[1] + 2;
-			break;
+		switch(ies[0]) {
+			case WLAN_EID_ERP_INFO:
+				break;
+			case WLAN_EID_EXT_SUPP_RATES:
+				*tail++ = WLAN_EID_EXT_SUPP_RATES;
+				if (chn <= 14) {
+					len = sizeof(ext_24g_rates);
+					*tail++ = len;
+					memcpy(tail, ext_24g_rates, len);
+					tail += len;
+				} else {
+					len = sizeof(ext_5g_rates);
+					*tail++ = len;
+					memcpy(tail, ext_5g_rates, len);
+					tail += len;
+				}
+				break;
+			case WLAN_EID_HT_OPERATION:
+				memcpy(tail, ies, ies[1] + 2);
+				tail[2] = chn;
+				tail += ies[1] + 2;
+				break;
+			default:
+				memcpy(tail, ies, ies[1] + 2);
+				tail += ies[1] + 2;
+				break;
 		}
 
 		ies += ies[1] + 2;

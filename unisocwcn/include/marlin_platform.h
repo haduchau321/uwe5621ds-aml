@@ -79,11 +79,13 @@ enum marlin_ant_num {
 
 enum marlin_wake_host_en {
 	BT_WAKE_HOST = 0,
-	WL_WAKE_HOST
+	WL_WAKE_HOST,
+	WL_NO_WAKE_HOST
 };
 
 enum marlin_cp2_status {
-	MARLIN_CP2_STS_ASSERTED = 0,
+	MARLIN_CP2_STS_READY = 0,
+	MARLIN_CP2_STS_ASSERTED = 1,
 };
 
 enum wcn_hw_type wcn_get_hw_if_type(void);
@@ -99,6 +101,7 @@ int marlin_get_wcn_module_vendor(void);
 int marlin_get_ant_num(void);
 void marlin_power_off(enum marlin_sub_sys subsys);
 int marlin_get_power(enum marlin_sub_sys subsys);
+int marlin_get_set_power_status(void);
 int marlin_set_wakeup(enum marlin_sub_sys subsys);
 int marlin_set_sleep(enum marlin_sub_sys subsys, bool enable);
 int marlin_reset_reg(void);
@@ -122,4 +125,17 @@ void mdbg_assert_interface(char *str);
 int marlin_reset_callback_register(u32 subsys, struct notifier_block *nb);
 void marlin_reset_callback_unregister(u32 subsys, struct notifier_block *nb);
 int marlin_reset_notify_call(enum marlin_cp2_status sts);
+int chip_power_off(int subsys);
+int chip_power_on(int subsys);
+
+#ifdef CONFIG_WCN_USB
+void marlin_schedule_usb_hotplug(void);
+int marlin_probe_status(void);
+int marlin_get_usb_hotplug_status(void);
+void marlin_set_usb_hotplug_status(int status);
+void marlin_set_usb_reset_status(int status);
+int marlin_get_usb_reset_status(void);
+extern struct completion wcn_usb_rst_fdl_done;
+#endif
+
 #endif

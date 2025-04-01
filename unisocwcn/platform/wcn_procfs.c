@@ -23,7 +23,7 @@
 #include <linux/seq_file.h>
 #include <linux/version.h>
 #include <linux/wait.h>
-#if KERNEL_VERSION(4, 14, 0) <= LINUX_VERSION_CODE
+#if KERNEL_VERSION(4, 11, 0) <= LINUX_VERSION_CODE
 #include <linux/sched/clock.h>
 #endif
 #include <wcn_bus.h>
@@ -38,8 +38,6 @@
 #include "marlin_platform.h"
 
 
-#define CONFIG_CP2_ASSERT       (0)
-
 u32 wcn_print_level = WCN_DEBUG_OFF;
 
 static u32 g_dumpmem_switch =  1;
@@ -47,6 +45,9 @@ static u32 g_loopcheck_switch;
 #ifdef CONFIG_WCN_PCIE
 struct wcn_pcie_info *pcie_dev;
 #endif
+#ifdef CONFIG_WCN_VERSION
+static char *wcn_cp2_version = NULL;
+#endif  /* CONFIG_WCN_VERSION */
 
 struct mdbg_proc_entry {
 	char *name;
@@ -79,6 +80,7 @@ unsigned char *mdbg_get_at_cmd_buf(void)
 
 void mdbg_assert_interface(char *str)
 {
+#ifdef CONFIG_CP2_ASSERT
 	int len = MDBG_ASSERT_SIZE;
 
 	if (strlen(str) <= MDBG_ASSERT_SIZE)
@@ -99,24 +101,34 @@ void mdbg_assert_interface(char *str)
 	WCN_INFO("mdbg_assert_interface:%s\n",
 		(char *)(mdbg_proc->assert.buf));
 
-#if (CONFIG_CP2_ASSERT)
 	sprdwcn_bus_set_carddump_status(true);
 #ifndef CONFIG_WCND
 	/* wcn_hold_cpu(); */
 	mdbg_dump_mem();
 #endif
 	wcnlog_clear_log();
-	mdbg_proc->assert.rcv_len = strlen(str);
+	mdbg_proc->assert.rcv_len = len;
 	mdbg_proc->fail_count++;
 	complete(&mdbg_proc->assert.completed);
 	wake_up_interruptible(&mdbg_proc->assert.rxwait);
-#else
-	WCN_ERR("%s,%s reset & notify...\n", __func__, str);
-	marlin_reset_notify_call(MARLIN_CP2_STS_ASSERTED);
+#else /*CONFIG_CP2_ASSERT*/
+	WCN_INFO("mdbg_assert_interface:%s\n", (char *)str);
+#ifdef CONFIG_WCN_SDIO
 	marlin_cp2_reset();
-	msleep(1000);
-	// marlin_reset_notify_call(MARLIN_CP2_STS_READY);
 #endif
+
+#ifdef CONFIG_WCN_USB
+	reinit_completion(&wcn_usb_rst_fdl_done);
+	marlin_set_usb_reset_status(1);
+	marlin_reset_reg();
+	if (wait_for_completion_timeout(&wcn_usb_rst_fdl_done,
+					msecs_to_jiffies(3000)) == 0) {
+		WCN_ERR("reset download fdl timeout\n");
+		return;
+	}
+	marlin_reset_reg();
+#endif
+#endif /*CONFIG_CP2_ASSERT*/
 
 }
 EXPORT_SYMBOL_GPL(mdbg_assert_interface);
@@ -141,7 +153,9 @@ static unsigned int mdbg_mbuf_get_datalength(struct mbuf_t *mbuf)
 static int mdbg_assert_read(int channel, struct mbuf_t *head,
 		     struct mbuf_t *tail, int num)
 {
+#ifdef CONFIG_CP2_ASSERT
 	unsigned int data_length;
+
 	data_length = mdbg_mbuf_get_datalength(head);
 	if (data_length > MDBG_ASSERT_SIZE) {
 		WCN_ERR("assert data len:%d,beyond max read:%d",
@@ -154,7 +168,6 @@ static int mdbg_assert_read(int channel, struct mbuf_t *head,
 	mdbg_proc->assert.rcv_len = data_length;
 	WCN_INFO("mdbg_assert_read:%s,data length %d\n",
 		(char *)(mdbg_proc->assert.buf), data_length);
-#if (CONFIG_CP2_ASSERT)
 #ifndef CONFIG_WCND
 	sprdwcn_bus_set_carddump_status(true);
 	/* wcn_hold_cpu(); */
@@ -165,18 +178,26 @@ static int mdbg_assert_read(int channel, struct mbuf_t *head,
 	complete(&mdbg_proc->assert.completed);
 	wake_up_interruptible(&mdbg_proc->assert.rxwait);
 	sprdwcn_bus_push_list(channel, head, tail, num);
+#else /*CONFIG_CP2_ASSERT*/
+	WCN_INFO("mdbg_assert_read:%s\n", (char *)(head->buf + PUB_HEAD_RSV));
+	sprdwcn_bus_push_list(channel, head, tail, num);
+#ifdef CONFIG_WCN_SDIO
+	marlin_cp2_reset();
+#endif
 
-#else
-		sprdwcn_bus_push_list(channel, head, tail, num);
-#ifdef CONFIG_WCN_LOOPCHECK
-		stop_loopcheck();
+#ifdef CONFIG_WCN_USB
+	reinit_completion(&wcn_usb_rst_fdl_done);
+	marlin_set_usb_reset_status(1);
+	marlin_reset_reg();
+	if (wait_for_completion_timeout(&wcn_usb_rst_fdl_done,
+					msecs_to_jiffies(3000)) == 0) {
+		WCN_ERR("reset download fdl timeout\n");
+		return -1;
+	}
+	marlin_reset_reg();
 #endif
-		WCN_ERR("chip reset & notify every subsystem...\n");
-		marlin_reset_notify_call(MARLIN_CP2_STS_ASSERTED);
-		marlin_cp2_reset();
-		msleep(1000);
-		// marlin_reset_notify_call(MARLIN_CP2_STS_READY);
-#endif
+#endif /*CONFIG_CP2_ASSERT*/
+
 	return 0;
 }
 EXPORT_SYMBOL_GPL(mdbg_assert_read);
@@ -243,6 +264,13 @@ static int mdbg_at_cmd_read(int channel, struct mbuf_t *head,
 		mdbg_proc->at_cmd.rcv_len = data_length;
 		WCN_INFO("WCND at cmd read:%s\n",
 			(char *)(mdbg_proc->at_cmd.buf));
+#ifdef CONFIG_WCN_VERSION
+		/* get cp2 version and save to wcn_cp2_version */
+		if (!wcn_cp2_version && !strncasecmp((char *)(mdbg_proc->at_cmd.buf), "WCN_VER", 7)) {
+			wcn_cp2_version = kmalloc(mdbg_proc->at_cmd.rcv_len, GFP_KERNEL);
+			strcpy(wcn_cp2_version, (char *)(mdbg_proc->at_cmd.buf));
+		}
+#endif  /* CONFIG_WCN_VERSION */
 		complete(&mdbg_proc->at_cmd.completed);
 #ifndef CONFIG_WCND
 		complete_kernel_atcmd();
@@ -420,6 +448,15 @@ static int mdbg_snap_shoot_seq_open(struct inode *inode, struct file *file)
 	return seq_open(file, &mdbg_snap_shoot_seq_ops);
 }
 
+#if KERNEL_VERSION(5, 6, 0) <= LINUX_VERSION_CODE
+static const struct proc_ops mdbg_snap_shoot_seq_fops = {
+	.proc_open = mdbg_snap_shoot_seq_open,
+	.proc_read = seq_read,
+	.proc_write = mdbg_snap_shoot_seq_write,
+	.proc_lseek = seq_lseek,
+	.proc_release = seq_release,
+};
+#else
 static const struct file_operations mdbg_snap_shoot_seq_fops = {
 	.open = mdbg_snap_shoot_seq_open,
 	.read = seq_read,
@@ -427,6 +464,7 @@ static const struct file_operations mdbg_snap_shoot_seq_fops = {
 	.llseek = seq_lseek,
 	.release = seq_release
 };
+#endif
 
 static int mdbg_proc_open(struct inode *inode, struct file *filp)
 {
@@ -704,16 +742,14 @@ static ssize_t mdbg_proc_write(struct file *filp,
 		slp_mgr_drv_sleep(DBG_TOOL, TRUE);
 	if (x == 'U')
 		sprdwcn_bus_aon_writeb(0X1B0, 0X10);
-	if (x == 'T') {
+	if (x == 'T')
 #ifdef CONFIG_MEM_PD
 		mem_pd_mgr(MARLIN_WIFI, 0X1);
 #endif
-	}
-	if (x == 'Q') {
+	if (x == 'Q')
 #ifdef CONFIG_MEM_PD
 		mem_pd_save_bin();
 #endif
-	}
 	if (x == 'N')
 		start_marlin(MARLIN_WIFI);
 	if (x == 'R')
@@ -751,6 +787,12 @@ static ssize_t mdbg_proc_write(struct file *filp,
 		mdbg_assert_interface("massert");
 		return count;
 	}
+
+	if (strncmp(mdbg_proc->write_buf, "startgps", 7) == 0) {
+		start_marlin(MARLIN_GNSS);
+		return count;
+	}
+
 
 
 	/* unit of loglimitsize is MByte. */
@@ -1007,6 +1049,15 @@ static unsigned int mdbg_proc_poll(struct file *filp, poll_table *wait)
 	return mask;
 }
 
+#if KERNEL_VERSION(5, 6, 0) <= LINUX_VERSION_CODE
+static const struct proc_ops mdbg_proc_fops = {
+	.proc_open = mdbg_proc_open,
+	.proc_release = mdbg_proc_release,
+	.proc_read = mdbg_proc_read,
+	.proc_write = mdbg_proc_write,
+	.proc_poll = mdbg_proc_poll,
+};
+#else
 static const struct file_operations mdbg_proc_fops = {
 	.open		= mdbg_proc_open,
 	.release	= mdbg_proc_release,
@@ -1014,6 +1065,7 @@ static const struct file_operations mdbg_proc_fops = {
 	.write		= mdbg_proc_write,
 	.poll		= mdbg_proc_poll,
 };
+#endif
 
 int mdbg_memory_alloc(void)
 {
@@ -1167,6 +1219,29 @@ static  void mdbg_memory_free(void)
 	mdbg_proc->at_cmd.buf = NULL;
 }
 
+#ifdef CONFIG_WCN_VERSION
+static int wcn_version_proc_show(struct seq_file *m, void *v)
+{
+	seq_printf(m, "unisoc wcn driver version: %s\n", CONFIG_WCN_VERSION);
+	seq_printf(m, "unisoc wcn driver build time: %s %s (UTC)\n", __DATE__, __TIME__);
+	seq_printf(m, "unisoc wcn cp2 version: %s\n", wcn_cp2_version);
+
+	return 0;
+}
+
+static int  wcn_version_proc_open(struct inode *inode, struct file *file)
+{
+	return single_open(file, wcn_version_proc_show, NULL);
+}
+
+static const struct file_operations wcn_version_proc_fops = {
+	.open		= wcn_version_proc_open,
+	.read		= seq_read,
+	.llseek		= seq_lseek,
+	.release	= single_release,
+};
+#endif  /* CONFIG_WCN_VERSION */
+
 int proc_fs_init(void)
 {
 	mdbg_proc = kzalloc(sizeof(struct mdbg_proc_t), GFP_KERNEL);
@@ -1205,6 +1280,11 @@ int proc_fs_init(void)
 						&mdbg_snap_shoot_seq_fops,
 						&(mdbg_proc->snap_shoot));
 
+#ifdef CONFIG_WCN_VERSION
+	/* /proc/mdbg/wcn_version */
+	proc_create("wcn_version", 0, mdbg_proc->procdir, &wcn_version_proc_fops);
+#endif  /* CONFIG_WCN_VERSION */
+
 	mdbg_fs_channel_init();
 
 	init_completion(&mdbg_proc->assert.completed);
@@ -1229,6 +1309,9 @@ void proc_fs_exit(void)
 	remove_proc_entry(mdbg_proc->assert.name, mdbg_proc->procdir);
 	remove_proc_entry(mdbg_proc->loopcheck.name, mdbg_proc->procdir);
 	remove_proc_entry(mdbg_proc->at_cmd.name, mdbg_proc->procdir);
+#ifdef CONFIG_WCN_VERSION
+	remove_proc_entry("wcn_version", mdbg_proc->procdir);
+#endif  /* CONFIG_WCN_VERSION */
 	remove_proc_entry(mdbg_proc->dir_name, NULL);
 
 	kfree(mdbg_proc);

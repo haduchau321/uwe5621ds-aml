@@ -34,8 +34,12 @@
 #include "sdiohal.h"
 #include "wcn_glb.h"
 
-#ifdef CONFIG_HISI_BOARD
+#if defined(CONFIG_HISI_BOARD) || defined(CONFIG_GOKE_BOARD)
+#ifdef CONFIG_GK6323AB
+extern int mmc_sdio_set_detect(int sdio_det);
+#else
 #include "mach/hardware.h"
+#endif
 #endif
 
 #ifdef CONFIG_AML_BOARD
@@ -45,7 +49,7 @@ extern int wifi_irq_num(void);
 extern int wifi_irq_trigger_level(void);
 extern void sdio_reinit(void);
 extern void sdio_clk_always_on(int on);
-//extern void sdio_set_max_reqsz(unsigned int size);
+extern void sdio_set_max_reqsz(unsigned int size);
 #endif
 
 #ifdef CONFIG_RK_BOARD
@@ -71,6 +75,11 @@ extern int sunxi_wlan_get_oob_irq_flags(void);
 
 #ifndef IS_BYPASS_WAKE
 #define IS_BYPASS_WAKE(addr) (false)
+#endif
+
+#if LINUX_VERSION_CODE > KERNEL_VERSION(4, 18, 20)
+extern void mmc_power_up(struct mmc_host *host, u32 ocr);
+extern void mmc_power_off(struct mmc_host *host);
 #endif
 
 static int (*scan_card_notify)(void);
@@ -101,6 +110,14 @@ static void sdiohal_card_unlock(struct sdiohal_data_t *p_data)
 struct sdiohal_data_t *sdiohal_get_data(void)
 {
 	return sdiohal_data;
+}
+
+unsigned char sdiohal_get_wl_wake_host_en(void)
+{
+	if(marlin_get_bt_wl_wake_host_en() & BIT(WL_WAKE_HOST))
+		return WL_WAKE_HOST;
+	else
+		return WL_NO_WAKE_HOST;
 }
 
 unsigned char sdiohal_get_tx_mode(void)
@@ -240,6 +257,9 @@ int sdiohal_sdio_pt_write(unsigned char *src, unsigned int datalen)
 	static long time_total_ns;
 	static int times_count;
 
+	ktime_t kt;
+	u32 sec;
+
 	getnstimeofday(&tm_begin);
 	if (unlikely(p_data->card_dump_flag == true)) {
 		sdiohal_err("%s line %d dump happened\n", __func__, __LINE__);
@@ -253,6 +273,21 @@ int sdiohal_sdio_pt_write(unsigned char *src, unsigned int datalen)
 
 	if (sdiohal_card_lock(p_data, __func__))
 		return -1;
+
+	kt = ktime_get();
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 10, 0)
+	sec = (u32)(div_u64(kt, NSEC_PER_SEC));
+#else/*LINUX_VERSION_CODE >= KERNEL_VERSION(4, 10, 0)*/
+	sec = (u32)(div_u64(kt.tv64, NSEC_PER_SEC));
+#endif/*LINUX_VERSION_CODE >= KERNEL_VERSION(4, 10, 0)*/
+	p_data->throughtput_tx.bytes += datalen;
+	if (p_data->throughtput_tx.sec != sec) {
+		p_data->throughtput_tx.throughtput = (p_data->throughtput_tx.bytes * 8) >> 10;
+		p_data->throughtput_tx.sec = sec;
+		p_data->throughtput_tx.bytes = 0;
+		sdiohal_pr_perf("tp_tx: %d Kbps\n", p_data->throughtput_tx.throughtput);
+	}
+
 
 	sdiohal_resume_check();
 	sdiohal_op_enter();
@@ -338,6 +373,9 @@ static int sdiohal_config_packer_chain(struct sdiohal_list_t *data_list,
 	unsigned int i, ttl_len = 0, node_num;
 	int err_ret = 0;
 
+	ktime_t kt;
+	u32 sec;
+
 	node_num = data_list->node_num;
 	if (node_num > MAX_CHAIN_NODE_NUM)
 		node_num = MAX_CHAIN_NODE_NUM;
@@ -413,6 +451,22 @@ static int sdiohal_config_packer_chain(struct sdiohal_list_t *data_list,
 	}
 
 	sdiohal_debug("ttl len:%d sg_count:%d\n", ttl_len, sg_count);
+
+	if (dir == SDIOHAL_WRITE) {
+		kt = ktime_get();
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 10, 0)
+		sec = (u32)(div_u64(kt, NSEC_PER_SEC));
+#else/*LINUX_VERSION_CODE >= KERNEL_VERSION(4, 10, 0)*/
+		sec = (u32)(div_u64(kt.tv64, NSEC_PER_SEC));
+#endif/*LINUX_VERSION_CODE >= KERNEL_VERSION(4, 10, 0)*/
+		p_data->throughtput_tx.bytes += ttl_len;
+		if (p_data->throughtput_tx.sec != sec) {
+			p_data->throughtput_tx.throughtput = (p_data->throughtput_tx.bytes * 8) >> 10;
+			p_data->throughtput_tx.sec = sec;
+			p_data->throughtput_tx.bytes = 0;
+			sdiohal_pr_perf("tp_tx: %d Kbps\n", p_data->throughtput_tx.throughtput);
+		}
+	}
 
 	blk_num = ttl_len / blk_size;
 	mmc_dat.sg = p_data->sg_list;
@@ -1254,8 +1308,9 @@ static int sdiohal_get_dev_func(struct sdio_func *func)
 	sdiohal_debug("func num is %d.", func->num);
 
 	if (func->num == 1) {
-		p_data->sdio_func[FUNC_0] = kmemdup(func, sizeof(*func),
-							 GFP_KERNEL);
+		p_data->sdio_func[FUNC_0] = kmemdup(func, sizeof(*func), GFP_KERNEL);
+		if(NULL == p_data->sdio_func[FUNC_0])
+			return -ENOMEM;
 		p_data->sdio_func[FUNC_0]->num = 0;
 		p_data->sdio_func[FUNC_0]->max_blksize = SDIOHAL_BLK_SIZE;
 	}
@@ -1482,6 +1537,72 @@ static void sdiohal_irq_handler_data(struct sdio_func *func)
 	sdiohal_rx_up();
 }
 
+static void sdiohal_shutdown(struct device *dev)
+{
+	struct sdiohal_data_t *p_data = sdiohal_get_data();
+	struct mchn_ops_t *sdiohal_ops;
+	struct sdio_func *func;
+	int chn;
+
+	sdiohal_info("[%s]enter\n", __func__);
+
+	atomic_set(&p_data->flag_suspending, 1);
+	for (chn = 0; chn < SDIO_CHANNEL_NUM; chn++) {
+		sdiohal_ops = chn_ops(chn);
+		if (sdiohal_ops && sdiohal_ops->power_notify) {
+#ifdef CONFIG_WCN_SLP
+			sdio_record_power_notify(true);
+#endif
+			if (sdiohal_ops->power_notify(chn, false)) {
+				sdiohal_info("[%s] chn:%d power notify fail\n",
+						__func__, chn);
+				atomic_set(&p_data->flag_suspending, 0);
+				goto finish;
+			}
+		}
+	}
+
+#ifdef CONFIG_WCN_SLP
+#ifndef CONFIG_WCN_TXRX_NSLP
+	slp_mgr_drv_sleep(SUBSYS_MAX, true);
+#endif
+	sdio_wait_pub_int_done();
+	sdio_record_power_notify(false);
+#endif
+
+	if (marlin_get_bt_wl_wake_host_en()) {
+		/* Inform CP side that AP will enter into suspend status. */
+		sprdwcn_bus_aon_writeb(REG_AP_INT_CP0, (1 << AP_SUSPEND));
+	}
+
+	atomic_set(&p_data->flag_suspending, 0);
+	atomic_set(&p_data->flag_resume, 0);
+	if (atomic_read(&p_data->irq_cnt))
+		sdiohal_lock_rx_ws();
+
+	if (WCN_CARD_EXIST(&p_data->xmit_cnt)) {
+		func = container_of(dev, struct sdio_func, dev);
+		func->card->host->pm_flags |= MMC_PM_KEEP_POWER;
+		sdiohal_info("%s pm_flags=0x%x, caps=0x%x\n", __func__,
+			     func->card->host->pm_flags,
+			     func->card->host->caps);
+	}
+
+	if (p_data->irq_type == SDIOHAL_RX_INBAND_IRQ) {
+		sdio_claim_host(p_data->sdio_func[FUNC_1]);
+		sdio_release_irq(p_data->sdio_func[FUNC_1]);
+		sdio_release_host(p_data->sdio_func[FUNC_1]);
+	} else if ((p_data->irq_type == SDIOHAL_RX_EXTERNAL_IRQ) &&
+		(p_data->irq_num > 0))
+		disable_irq(p_data->irq_num);
+
+	if (WCN_CARD_EXIST(&p_data->xmit_cnt))
+		atomic_add(SDIOHAL_REMOVE_CARD_VAL, &p_data->xmit_cnt);
+
+finish:
+	return;
+}
+
 static int sdiohal_suspend(struct device *dev)
 {
 	struct sdiohal_data_t *p_data = sdiohal_get_data();
@@ -1516,6 +1637,9 @@ static int sdiohal_suspend(struct device *dev)
 	}
 
 #ifdef CONFIG_WCN_SLP
+#ifndef CONFIG_WCN_TXRX_NSLP
+	slp_mgr_drv_sleep(SUBSYS_MAX, true);
+#endif
 	sdio_wait_pub_int_done();
 	sdio_record_power_notify(false);
 #endif
@@ -1571,9 +1695,17 @@ static int sdiohal_resume(struct device *dev)
 	 * For hisi board, sdio host will power down.
 	 * So sdio slave need to reset and reinit.
 	 */
+#if KERNEL_VERSION(4, 18, 20) >= LINUX_VERSION_CODE
 	mmc_power_save_host(p_data->sdio_dev_host);
+#else
+	mmc_power_off(p_data->sdio_dev_host);
+#endif
 	mdelay(5);
+#if KERNEL_VERSION(4, 18, 20) >= LINUX_VERSION_CODE
 	mmc_power_restore_host(p_data->sdio_dev_host);
+#else
+	mmc_power_up(p_data->sdio_dev_host, p_data->sdio_dev_host->card->ocr);
+#endif
 
 	if (!p_data->pwrseq) {
 		/* Enable Function 1 */
@@ -1598,6 +1730,20 @@ static int sdiohal_resume(struct device *dev)
 	atomic_set(&p_data->flag_resume, 1);
 	if (!WCN_CARD_EXIST(&p_data->xmit_cnt))
 		atomic_sub(SDIOHAL_REMOVE_CARD_VAL, &p_data->xmit_cnt);
+
+#if (defined CONFIG_WCN_SLP) && (!defined CONFIG_WCN_TXRX_NSLP)
+#ifdef CONFIG_AML_BOARD
+	udelay(500);
+	sdio_clk_always_on(1);
+	udelay(900);
+#endif
+	slp_mgr_wakeup(SUBSYS_MAX);
+#ifdef CONFIG_AML_BOARD
+	udelay(500);
+	sdio_clk_always_on(0);
+	udelay(500);
+#endif
+#endif
 
 #ifdef CONFIG_WCN_RESUME_KEEPPWR_RESETSDIO
 	/* After resume will reset sdio reg, re-enable sdio int. */
@@ -1857,7 +2003,14 @@ void sdiohal_reset(bool full_reset)
 }
 #endif
 
-#ifdef CONFIG_HISI_BOARD
+#if defined(CONFIG_HISI_BOARD) || defined(CONFIG_GOKE_BOARD)
+#ifdef CONFIG_GK6323AB
+void sdiohal_set_card_present(bool enable)
+{
+	sdiohal_info("%s enable:%d\n", __func__, enable);
+	mmc_sdio_set_detect(enable);
+}
+#else
 #define REG_BASE_CTRL __io_address(0xf8a20008)
 void sdiohal_set_card_present(bool enable)
 {
@@ -1874,6 +2027,7 @@ void sdiohal_set_card_present(bool enable)
 	writel(regval, REG_BASE_CTRL);
 }
 #endif
+#endif
 
 static int sdiohal_probe(struct sdio_func *func,
 	const struct sdio_device_id *id)
@@ -1883,20 +2037,19 @@ static int sdiohal_probe(struct sdio_func *func,
 	struct mmc_host *host = func->card->host;
 
 	sdiohal_info("%s: func->class=%x, vendor=0x%04x, device=0x%04x, "
-		     "func_num=0x%04x, clock=%d\n",
+		     "func_num=0x%04x, clock=%d, SDIOHAL_RX_RECVBUF_LEN:%d,"
+		     "SDIOHAL_32_BIT_RX_RECVBUF_LEN:%d.\n",
 		     __func__, func->class, func->vendor, func->device,
-		     func->num, host->ios.clock);
+		     func->num, host->ios.clock,
+		     SDIOHAL_RX_RECVBUF_LEN >> 10,
+		     SDIOHAL_32_BIT_RX_RECVBUF_LEN >> 10);
 
 #ifdef CONFIG_AML_BOARD
-	if (p_data->irq_type == SDIOHAL_RX_INBAND_IRQ) {
-		/* disable auto clock, sdio clock will be always on. */
-		sdio_clk_always_on(1);
-	}
 	/*
 	 * setting sdio max request size to 512kB
 	 * to improve transmission efficiency.
 	 */
-	//sdio_set_max_reqsz(0x80000);
+	sdio_set_max_reqsz(0x80000);
 #endif
 
 	ret = sdiohal_get_dev_func(func);
@@ -1915,7 +2068,14 @@ static int sdiohal_probe(struct sdio_func *func,
 		return -1;
 	}
 	sdiohal_debug("get host ok!!!");
-
+#if defined(CONFIG_HISI_BOARD) || defined(CONFIG_GOKE_BOARD)
+/**
+ * max_blk_count default is 256
+ * MAX_CHAIN_NODE_NUM * MAX_MBUF_SIZE / (CONFIG_SDIO_BLKSIZE)
+ * should max than max_blk_count
+*/
+		p_data->sdio_dev_host->max_blk_count = 512;
+#endif
 	atomic_set(&p_data->xmit_start, 1);
 
 	if (!p_data->pwrseq) {
@@ -1972,7 +2132,10 @@ static int sdiohal_probe(struct sdio_func *func,
 	if (scan_card_notify != NULL)
 		scan_card_notify();
 
-	device_disable_async_suspend(&func->dev);
+	sdiohal_info("%s: sdio_dev_host, max_req_size=0x%x, max_blk_count=0x%x, max_blk_size=0x%x\n",
+		__func__, p_data->sdio_dev_host->max_req_size,
+		p_data->sdio_dev_host->max_blk_count, p_data->sdio_dev_host->max_blk_size);
+
 	sdiohal_debug("rescan callback:%p\n", scan_card_notify);
 	sdiohal_info("probe ok\n");
 
@@ -1985,7 +2148,7 @@ static void sdiohal_remove(struct sdio_func *func)
 
 	sdiohal_info("[%s]enter\n", __func__);
 
-#ifdef CONFIG_HISI_BOARD
+#if defined(CONFIG_HISI_BOARD) || defined(CONFIG_GOKE_BOARD)
 	sdiohal_set_card_present(0);
 #endif
 
@@ -1993,6 +2156,9 @@ static void sdiohal_remove(struct sdio_func *func)
 		atomic_add(SDIOHAL_REMOVE_CARD_VAL, &p_data->xmit_cnt);
 
 	complete(&p_data->remove_done);
+
+	if(NULL != p_data->sdio_func[FUNC_0])
+		kzfree(p_data->sdio_func[FUNC_0]);
 
 	if (p_data->irq_type == SDIOHAL_RX_INBAND_IRQ) {
 		sdio_claim_host(p_data->sdio_func[FUNC_1]);
@@ -2059,6 +2225,7 @@ static struct sdio_driver sdiohal_driver = {
 	.id_table = sdiohal_ids,
 	.drv = {
 		.pm = &sdiohal_pm_ops,
+		.shutdown = sdiohal_shutdown,
 	},
 };
 
@@ -2086,7 +2253,7 @@ void sdiohal_remove_card(void)
 
 	init_completion(&p_data->remove_done);
 
-#ifdef CONFIG_HISI_BOARD
+#if defined(CONFIG_HISI_BOARD) || defined(CONFIG_GOKE_BOARD)
 	sdiohal_set_card_present(0);
 #endif
 
@@ -2127,8 +2294,6 @@ int sdiohal_scan_card(void)
 	sdiohal_info("sdiohal_scan_card\n");
 
 #ifdef CONFIG_AML_BOARD
-	if (p_data->irq_type == SDIOHAL_RX_INBAND_IRQ)
-		sdio_clk_always_on(0);
 	/* As for amlogic platform, Not remove sdio card.
 	 * When system is booting up, amlogic platform will power
 	 * up and get wifi module sdio id to know which vendor.
@@ -2147,16 +2312,16 @@ int sdiohal_scan_card(void)
 		 * If reset pin NC, don't need to reset sdio slave.
 		 */
 		if (p_data->sdio_dev_host != NULL)
+#if KERNEL_VERSION(4, 18, 20) >= LINUX_VERSION_CODE
 			mmc_power_restore_host(p_data->sdio_dev_host);
-		if (p_data->irq_type == SDIOHAL_RX_INBAND_IRQ) {
-			/* disable auto clock, sdio clock will be always on. */
-			sdio_clk_always_on(1);
-		}
+#else
+			mmc_power_up(p_data->sdio_dev_host, p_data->sdio_dev_host->card->ocr);
+#endif
 		/*
 		 * setting sdio max request size to 512kB
 		 * to improve transmission efficiency.
 		 */
-		//sdio_set_max_reqsz(0x80000);
+		sdio_set_max_reqsz(0x80000);
 
 		if (!p_data->pwrseq) {
 			/* Enable Function 1 */
@@ -2186,8 +2351,8 @@ int sdiohal_scan_card(void)
 		msleep(100);
 	}
 
-#ifdef CONFIG_HISI_BOARD
-	/* only for hisi mv300 scan card mechanism */
+#if defined(CONFIG_HISI_BOARD) || defined(CONFIG_GOKE_BOARD)
+	/* only for hisi mv300 or goke scan card mechanism */
 	sdiohal_set_card_present(1);
 #endif
 

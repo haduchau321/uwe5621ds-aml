@@ -23,7 +23,9 @@
 #include "cmdevt.h"
 #include "intf_ops.h"
 #include "work.h"
+#if defined(UWE5621_FTR)
 #include "wl_intf.h"
+#endif
 #include "rx_msg.h"
 #include "tcp_ack.h"
 #include "wl_core.h"
@@ -38,14 +40,27 @@ int sprdwl_send_data(struct sprdwl_vif *vif, struct sprdwl_msg_buf *msg,
 	int delta;
 	unsigned long align_addr;
 	unsigned char *buf = NULL;
+/*TODO temp for MARLIN2*/
+#ifndef UWE5621_FTR
+	struct sprdwl_data_hdr *hdr;
+#endif
 	struct sprdwl_intf *intf;
 	unsigned int plen = cpu_to_le16(skb->len);
 
 	intf = (struct sprdwl_intf *)vif->priv->hw_priv;
 	buf = skb->data;
-
+/*TODO temp for MARLIN2*/
+#ifndef UWE5621_FTR
+	skb_push(skb, sizeof(*hdr) + offset);
+	hdr = (struct sprdwl_data_hdr *)skb->data;
+	memset(hdr, 0, sizeof(*hdr));
+	hdr->common.type = SPRDWL_TYPE_DATA;
+	hdr->common.ctx_id = vif->ctx_id;
+	hdr->plen = cpu_to_le16(skb->len);
+#else
 	if (sprdwl_intf_fill_msdu_dscr(vif, skb, SPRDWL_TYPE_DATA, offset))
 		return -EPERM;
+#endif /* UWE5621_FTR */
 #ifdef OTT_UWE
 	skb_push(skb, 3);
 	if ((unsigned long)skb->data & 0x3) {
@@ -105,6 +120,10 @@ int sprdwl_send_cmd(struct sprdwl_priv *priv, struct sprdwl_msg_buf *msg)
 	ret = sprdwl_intf_tx(priv, msg);
 	if (ret) {
 		wl_err("%s TX cmd Err: %d\n", __func__, ret);
+		/* now cmd msg droped */
+#if !defined(UWE5621_FTR)
+		dev_kfree_skb(skb);
+#endif
 	}
 
 	return ret;
@@ -148,8 +167,10 @@ void sprdwl_rx_skb_process(struct sprdwl_priv *priv, struct sk_buff *skb)
 	struct sk_buff *tx_skb = NULL;
 	struct sprdwl_intf *intf;
 	struct ethhdr *eth;
+	struct sprdwl_rx_if *rx_if;
 
 	intf = (struct sprdwl_intf *)priv->hw_priv;
+	rx_if = (struct sprdwl_rx_if *)intf->sprdwl_rx;
 
 	if (unlikely(!priv)) {
 		wl_err("%s priv not init.\n", __func__);
@@ -160,6 +181,38 @@ void sprdwl_rx_skb_process(struct sprdwl_priv *priv, struct sk_buff *skb)
 	if (msdu_desc->ctx_id >= SPRDWL_MAC_INDEX_MAX) {
 		wl_err("%s [ctx_id %d]RX err\n", __func__, msdu_desc->ctx_id);
 		goto err;
+	}
+
+	if ((msdu_desc->amsdu_flag == 1) && (msdu_desc->snap_hdr_present == 0) &&
+		(msdu_desc->first_msdu_of_mpdu == 1)) {
+		rx_if->rx_snaphdr_flag = 1;
+		rx_if->rx_snaphdr_seqnum = msdu_desc->seq_num;
+		rx_if->rx_snaphdr_lut = msdu_desc->sta_lut_index;
+		rx_if->rx_snaphdr_tid = msdu_desc->tid;
+		wl_info("%s snaphdr attect flag %d %d %d\n", __func__, msdu_desc->seq_num,
+					msdu_desc->sta_lut_index, msdu_desc->tid);
+		if (msdu_desc->last_buff_of_mpdu == 1) {
+			rx_if->rx_snaphdr_flag = 0;
+			wl_info("%s snaphdr attect over %d last %d %d %d\n", __func__, msdu_desc->snap_hdr_present,
+				msdu_desc->last_msdu_of_mpdu, msdu_desc->last_buff_of_mpdu, msdu_desc->last_msdu_of_buff);
+		}
+		goto err;
+	}
+
+	if(rx_if->rx_snaphdr_flag == 1) {
+		if ((rx_if->rx_snaphdr_seqnum == msdu_desc->seq_num) &&
+			(rx_if->rx_snaphdr_lut == msdu_desc->sta_lut_index) &&
+			(rx_if->rx_snaphdr_tid == msdu_desc->tid)) {
+			wl_err("%s snaphdr attect %d %d %d\n", __func__, msdu_desc->seq_num,
+				msdu_desc->sta_lut_index, msdu_desc->tid);
+			if (msdu_desc->last_buff_of_mpdu == 1) {
+				rx_if->rx_snaphdr_flag = 0;
+				wl_info("%s snaphdr attect over %d %d %d %d last %d %d %d\n", __func__, msdu_desc->snap_hdr_present,
+					msdu_desc->seq_num, msdu_desc->sta_lut_index, msdu_desc->tid,
+					msdu_desc->last_msdu_of_mpdu, msdu_desc->last_buff_of_mpdu, msdu_desc->last_msdu_of_buff);
+			}
+			goto err;
+		}
 	}
 
 	vif = ctx_id_to_vif(priv, msdu_desc->ctx_id);
@@ -217,6 +270,10 @@ void sprdwl_rx_skb_process(struct sprdwl_priv *priv, struct sk_buff *skb)
 
 		/* skb->data MUST point to ETH HDR */
 		sprdwl_filter_rx_tcp_ack(priv, skb->data, msdu_desc->msdu_len);
+		/*adjust drop tcpack enable or not*/
+#ifdef TCPACK_DROP_DYNAMIC
+		sprdwl_count_rx_tp_tcp_ack(intf, msdu_desc->msdu_len);
+#endif
 		sprdwl_netif_rx(skb, ndev);
 	}
 

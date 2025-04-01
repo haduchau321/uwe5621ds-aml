@@ -8,59 +8,61 @@ struct wcn_usb_store_chn2ep {
 	struct wcn_usb_work_data *work_data;
 	struct wcn_usb_ep *ep;
 	__u8 epAddress;
+	bool enable;
 };
 
 #define ep_get_chn2ep(x) container_of(x, struct wcn_usb_store_chn2ep, ep)
 
-#define FILL_CHN2EP_MAP(channel_id, ep_address)\
+#define FILL_CHN2EP_MAP(channel_id, ep_address, flag)\
 	.ep = NULL, \
-	.epAddress = ep_address
+	.epAddress = ep_address, \
+	.enable = flag
 
 /* we need explicitly define the chn2ep table */
 /* channel_id must be Continuous and begin with zero */
 /* then we can say index == channel */
 static struct wcn_usb_store_chn2ep chn2ep_table[] = {
-	{FILL_CHN2EP_MAP(0, 0x00)},/* no use */
-	{FILL_CHN2EP_MAP(1, 0x01)},
-	{FILL_CHN2EP_MAP(2, 0x02)},
-	{FILL_CHN2EP_MAP(3, 0x03)},
-	{FILL_CHN2EP_MAP(4, 0x04)},
-	{FILL_CHN2EP_MAP(5, 0x05)},
-	{FILL_CHN2EP_MAP(6, 0x06)},
-	{FILL_CHN2EP_MAP(7, 0x07)},
-	{FILL_CHN2EP_MAP(8, 0x08)},
-	{FILL_CHN2EP_MAP(9, 0x09)},
-	{FILL_CHN2EP_MAP(10, 0x0A)},
-	{FILL_CHN2EP_MAP(11, 0x0B)},
-	{FILL_CHN2EP_MAP(12, 0x0C)},
-	{FILL_CHN2EP_MAP(13, 0x0D)},
-	{FILL_CHN2EP_MAP(14, 0x0E)},
-	{FILL_CHN2EP_MAP(15, 0x0F)},
-	{FILL_CHN2EP_MAP(16, 0x00)},/* no use */
+	{FILL_CHN2EP_MAP(0, 0x00, true)},/* no use */
+	{FILL_CHN2EP_MAP(1, 0x01, false)},
+	{FILL_CHN2EP_MAP(2, 0x02, true)},
+	{FILL_CHN2EP_MAP(3, 0x03, true)},
+	{FILL_CHN2EP_MAP(4, 0x04, true)},
+	{FILL_CHN2EP_MAP(5, 0x05, false)},
+	{FILL_CHN2EP_MAP(6, 0x06, true)},
+	{FILL_CHN2EP_MAP(7, 0x07, true)},
+	{FILL_CHN2EP_MAP(8, 0x08, false)},
+	{FILL_CHN2EP_MAP(9, 0x09, false)},
+	{FILL_CHN2EP_MAP(10, 0x0A, false)},
+	{FILL_CHN2EP_MAP(11, 0x0B, false)},
+	{FILL_CHN2EP_MAP(12, 0x0C, false)},
+	{FILL_CHN2EP_MAP(13, 0x0D, false)},
+	{FILL_CHN2EP_MAP(14, 0x0E, false)},
+	{FILL_CHN2EP_MAP(15, 0x0F, false)},
+	{FILL_CHN2EP_MAP(16, 0x00, false)},/* no use */
 	/* There is BUG in MUSB_SPRD's inturrpt */
 #ifndef NO_EXCHANGE_CHANNEL_17
-	{FILL_CHN2EP_MAP(17, 0x8A)},
+	{FILL_CHN2EP_MAP(17, 0x8A, true)},
 #else
-	{FILL_CHN2EP_MAP(17, 0x81)},
+	{FILL_CHN2EP_MAP(17, 0x81, true)},
 #endif
-	{FILL_CHN2EP_MAP(18, 0x82)},
-	{FILL_CHN2EP_MAP(19, 0x83)},
-	{FILL_CHN2EP_MAP(20, 0x84)},
-	{FILL_CHN2EP_MAP(21, 0x85)},
-	{FILL_CHN2EP_MAP(22, 0x86)},
-	{FILL_CHN2EP_MAP(23, 0x87)},
-	{FILL_CHN2EP_MAP(24, 0x88)},
-	{FILL_CHN2EP_MAP(25, 0x89)},
+	{FILL_CHN2EP_MAP(18, 0x82, true)},
+	{FILL_CHN2EP_MAP(19, 0x83, true)},
+	{FILL_CHN2EP_MAP(20, 0x84, true)},
+	{FILL_CHN2EP_MAP(21, 0x85, true)},
+	{FILL_CHN2EP_MAP(22, 0x86, true)},
+	{FILL_CHN2EP_MAP(23, 0x87, true)},
+	{FILL_CHN2EP_MAP(24, 0x88, true)},
+	{FILL_CHN2EP_MAP(25, 0x89, true)},
 #ifndef NO_EXCHANGE_CHANNEL_17
-	{FILL_CHN2EP_MAP(26, 0x81)},
+	{FILL_CHN2EP_MAP(26, 0x81, true)},
 #else
-	{FILL_CHN2EP_MAP(26, 0x8A)},
+	{FILL_CHN2EP_MAP(26, 0x8A, true)},
 #endif
-	{FILL_CHN2EP_MAP(27, 0x8B)},
-	{FILL_CHN2EP_MAP(28, 0x8C)},
-	{FILL_CHN2EP_MAP(29, 0x8D)},
-	{FILL_CHN2EP_MAP(30, 0x8E)},
-	{FILL_CHN2EP_MAP(31, 0x8F)},
+	{FILL_CHN2EP_MAP(27, 0x8B, false)},
+	{FILL_CHN2EP_MAP(28, 0x8C, false)},
+	{FILL_CHN2EP_MAP(29, 0x8D, false)},
+	{FILL_CHN2EP_MAP(30, 0x8E, false)},
+	{FILL_CHN2EP_MAP(31, 0x8F, false)},
 };
 
 #ifndef array_size
@@ -72,7 +74,7 @@ static struct wcn_usb_store_chn2ep chn2ep_table[] = {
 
 static struct wcn_usb_store_chn2ep *wcn_usb_store_get_chn2ep(int index)
 {
-	struct wcn_usb_store_chn2ep *ret;
+	struct wcn_usb_store_chn2ep *chn2ep;
 	int table_size = chn2ep_table_size();
 
 	/* May be we can call unlike */
@@ -82,9 +84,14 @@ static struct wcn_usb_store_chn2ep *wcn_usb_store_get_chn2ep(int index)
 		return NULL;
 	}
 
-	ret = chn2ep_table + index;
+	chn2ep = chn2ep_table + index;
 
-	return ret;
+	if (chn2ep->enable == false) {
+		wcn_usb_info("%s index[%d] is disable\n", __func__, index);
+		return NULL;
+	}
+
+	return chn2ep;
 }
 
 /**
@@ -132,6 +139,9 @@ int wcn_usb_store_addr2chn(__u8 epAddress)
 
 	for (i = 0; i < table_size; i++) {
 		chn2ep = wcn_usb_store_get_chn2ep(i);
+		if (!chn2ep)
+			continue;
+
 		if (chn2ep->epAddress == epAddress)
 			return i;
 	}
@@ -161,6 +171,9 @@ int wcn_usb_store_travel_ep(ep_handle_cb cb, void *pdata)
 
 	for (i = 0; i < table_size; i++) {
 		chn2ep = wcn_usb_store_get_chn2ep(i);
+		if (!chn2ep)
+			continue;
+
 		ret = cb(chn2ep->ep, pdata);
 		if (ret)
 			return ret;
@@ -187,6 +200,9 @@ int wcn_usb_store_init(void)
 
 	for (i = 0; i < table_size; i++) {
 		chn2ep = wcn_usb_store_get_chn2ep(i);
+		if (!chn2ep)
+			continue;
+
 		WARN_ON(chn2ep->ep != NULL);
 
 		chn2ep->ep = kzalloc(sizeof(struct wcn_usb_ep), GFP_KERNEL);
@@ -216,16 +232,19 @@ static int wcn_usb_work_data_reset(void)
 
 	for (i = 0; i < table_size; i++) {
 		chn2ep = wcn_usb_store_get_chn2ep(i);
+		if (!chn2ep)
+			continue;
 
+		spin_lock_irq(&chn2ep->work_data->lock);
 		chn2ep->work_data->report_num_last = 0;
 		chn2ep->work_data->transfer_remains = 0;
 		chn2ep->work_data->report_num = 0;
+		spin_unlock_irq(&chn2ep->work_data->lock);
 	}
 
 	wcn_usb_info("%s success\n", __func__);
 	return 0;
 }
-
 
 /**
  * wcn_usb_store_delet() - free wcn_usb_store memory.
@@ -245,6 +264,9 @@ void wcn_usb_store_delet(void)
 
 	for (i = 0; i < table_size; i++) {
 		chn2ep = wcn_usb_store_get_chn2ep(i);
+		if (!chn2ep)
+			continue;
+
 		kfree(chn2ep->ep);
 	}
 }
@@ -299,7 +321,7 @@ int wcn_usb_state_get(enum wcn_usb_event event)
 		interface_id = event - interface_unplug_base;
 		return (state->interface_pluged & (1 << interface_id)) == 0;
 	case dev_unplug_fully:
-		return state->interface_pluged == 0x7;
+		return !state->interface_pluged;
 	case download_over:
 		return state->downloaded == 1;
 	case pwr_state:
@@ -314,6 +336,27 @@ int wcn_usb_state_get(enum wcn_usb_event event)
 		break;
 	}
 	return 0;
+}
+
+void wcn_usb_state_clear(enum wcn_usb_event event)
+{
+	int ret = 0;
+	struct wcn_usb_state *state = &wcn_usb_state;
+
+	switch(event){
+		case cp_ready:
+			if (state->cp_ready) {
+				state->cp_ready = 0;
+			} else {
+				ret = -1;
+			}
+			break;
+		default:
+			ret = -2;
+			break;
+	}
+
+	wcn_usb_info("%s ret=%d\n", __func__, ret);
 }
 
 static int wcn_usb_state_nb_cb(struct notifier_block *nb,

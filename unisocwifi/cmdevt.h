@@ -335,7 +335,12 @@ struct sprdwl_cmd_fw_info {
 #define TX_WITH_CREDIT	(0)
 #define TX_NO_CREDIT	(1)
 	unsigned char credit_capa;
-} __packed;
+#define SPRDWL_EXTEND_FEATURE_SAE          BIT(0)
+#define SPRDWL_EXTEND_FEATURE_OWE          BIT(1)
+#define SPRDWL_EXTEND_FEATURE_DPP          BIT(2)
+#define SPRDWL_EXTEND_8021X_SUITE_B_192    BIT(3)
+	__le32 extend_feature;
+} ;
 
 /* WIFI_CMD_OPEN */
 struct sprdwl_cmd_open {
@@ -400,6 +405,7 @@ struct sprdwl_cmd_set_ie {
 #define	SPRDWL_IE_ASSOC_RESP		4
 #define	SPRDWL_IE_BEACON_HEAD		5
 #define	SPRDWL_IE_BEACON_TAIL		6
+#define	SPRDWL_IE_SAE			7
 	u8 type;
 	__le16 len;
 	u8 data[0];
@@ -907,6 +913,7 @@ struct sprdwl_tlv_data {
 /* TLV type list */
 #define GET_INFO_TLV_TP_OTT	1
 #define NOTIFY_AP_VERSION	2
+#define NOTIFY_CREDIT_VIA_RX_DATA 5
 
 struct ap_version_tlv_elmt {
 #define NOTIFY_AP_VERSION_USER 0
@@ -1124,8 +1131,6 @@ int sprdwl_send_data2cmd(struct sprdwl_priv *priv, u8 vif_ctx_id,
 void mdbg_assert_interface(char *str);
 void sprdwl_set_tlv_elmt(u8 *addr, u16 type, u16 len, u8 *data);
 int sprdwl_set_wowlan(struct sprdwl_priv *priv, int subcmd, void *pad, int pad_len);
-#ifdef SYNC_DISCONNECT
 int sprdwl_sync_disconnect_event(struct sprdwl_vif *vif, unsigned int timeout);
-#endif
 int sprdwl_set_if_down(struct net_device *ndev);
 #endif

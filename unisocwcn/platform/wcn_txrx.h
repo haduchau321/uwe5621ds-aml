@@ -18,7 +18,6 @@
 #include <linux/types.h>
 #include <linux/version.h>
 #include <linux/wait.h>
-#include <linux/pm_wakeup.h>
 
 #include "mdbg_type.h"
 #include <wcn_bus.h>
@@ -48,11 +47,9 @@ struct ring_rx_data {
 
 struct ring_device {
 	struct mdbg_ring_t	*ring;
-#if KERNEL_VERSION(4, 14, 0) <= LINUX_VERSION_CODE
-	struct wake_lock	rw_wake_lock;
-#else
-	struct wakeup_source	rw_wake_lock;
-#endif
+	/*wakeup_source pointer*/
+	struct wakeup_source	*rw_wake_lock;
+
 	spinlock_t		rw_lock;
 	struct mutex mdbg_read_mutex;
 	struct list_head	rx_head;
@@ -143,27 +140,5 @@ int mdbg_tx_power_notify(int chn, int flag);
 long mdbg_content_len(void);
 int mdbg_read_release(unsigned int fifo_id);
 bool mdbg_rx_count_change(void);
-
-struct wakeup_source *my_wakelock;
-
-void example_function(void) {
-    // Khởi tạo wakelock
-    if (!my_wakelock)
-        my_wakelock = wakeup_source_register(NULL, "my_wakelock");
-
-    // Kích hoạt wakelock
-    __pm_stay_awake(my_wakelock);
-
-    // ... some code ...
-
-    // Giải phóng wakelock
-    __pm_relax(my_wakelock);
-}
-
-// Giải phóng tài nguyên khi không cần nữa
-void cleanup_function(void) {
-    if (my_wakelock)
-        wakeup_source_unregister(my_wakelock);
-}
 
 #endif

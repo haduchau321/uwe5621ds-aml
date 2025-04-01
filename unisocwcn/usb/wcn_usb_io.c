@@ -801,18 +801,21 @@ static struct usb_class_driver wcn_usb_io_class = {
 };
 #endif
 
+static atomic_t wcn_usb_suspend_flag;
+static atomic_t wcn_usb_resume_flag;
+
 static int wcn_usb_io_probe(struct usb_interface *interface,
 				const struct usb_device_id *id)
 {
 	/* init a struct wcn_usb_intf and fill it! */
 	struct wcn_usb_intf *intf;
+	int interface_num;
 
 	intf = kzalloc(sizeof(struct wcn_usb_intf), GFP_KERNEL);
 	if (!intf)
 		return -ENOMEM;
 
 	usb_set_intfdata(interface, intf);
-
 	spin_lock_init(&intf->lock);
 	mutex_init(&intf->flag_lock);
 	init_waitqueue_head(&intf->wait_user);
@@ -820,13 +823,21 @@ static int wcn_usb_io_probe(struct usb_interface *interface,
 	intf->interface = usb_get_intf(interface);
 	intf->udev = usb_get_dev(interface_to_usbdev(interface));
 	/* register struct wcn_usb_intf */
+	interface_num = interface->cur_altsetting->desc.bInterfaceNumber;
+
 	wcn_usb_intf_fill_store(intf);
+	wcn_usb_info("interface[%x] is register\n", interface_num);
 
-	wcn_usb_info("interface[%x] is register\n",
-			interface->cur_altsetting->desc.bInterfaceNumber);
+	atomic_set(&wcn_usb_suspend_flag, -1);
+	atomic_set(&wcn_usb_resume_flag, 0);
+	wcn_usb_state_sent_event(interface_plug_base + interface_num);
 
-	wcn_usb_state_sent_event(interface_plug_base +
-			interface->cur_altsetting->desc.bInterfaceNumber);
+	if ((interface_plug_base + interface_num) == interface_2_plug) {
+		if (marlin_probe_status() && marlin_get_set_power_status() > 0) {
+			sprdwcn_bus_set_carddump_status(false);
+			marlin_schedule_usb_hotplug();
+		}
+	}
 
 	return 0;
 }
@@ -837,17 +848,26 @@ static void wcn_usb_io_disconnect(struct usb_interface *interface)
 	 * this driver may be probe and disconnect so much times!
 	 */
 	struct wcn_usb_intf *intf;
+	int interface_num;
 
-	wcn_usb_state_sent_event(interface_unplug_base +
-			interface->cur_altsetting->desc.bInterfaceNumber);
+	interface_num = interface->cur_altsetting->desc.bInterfaceNumber;
 
-	wcn_usb_info("interface[%x] will be unregister\n",
-			interface->cur_altsetting->desc.bInterfaceNumber);
+	if ((interface_unplug_base + interface_num) == interface_0_unplug) {
+		if (marlin_probe_status()) {
+			marlin_reset_notify_call(MARLIN_CP2_STS_ASSERTED);
+			wcn_usb_state_clear(cp_ready);
+			wcn_usb_state_sent_event(pwr_off);
+			marlin_set_usb_hotplug_status(1);
+			wcn_usb_info("%s usb hotplug disconnect\n", __func__);
+		}
+	}
+
+	wcn_usb_state_sent_event(interface_unplug_base + interface_num);
+	wcn_usb_info("interface[%x] will be unregister\n", interface_num);
+
 	intf = usb_get_intfdata(interface);
-
 	/* this lock must give me! */
 	intf_set_unavailable(intf, 1);
-
 	usb_set_intfdata(interface, NULL);
 	wcn_usb_intf_erase_store(intf);
 	usb_put_dev(intf->udev);
@@ -879,6 +899,243 @@ static int wcn_usb_io_post_reset(struct usb_interface *interface)
 	return 0;
 }
 
+#include "bus_common.h"
+
+extern int wcn_usb_channel_is_apostle(int chn);
+
+static int wcn_usb_io_suspend(struct usb_interface *intf, pm_message_t message)
+{
+	int chn, ret = 0;
+	struct mchn_ops_t *wcn_usb_ops;
+	struct wcn_usb_ep *ep_to_suspend;
+
+	/* different with PM_EVENT_AUTO_SUSPEND */
+	if (message.event == PM_EVENT_AUTO_SUSPEND) {
+		wcn_usb_err("%s pm_event[%d] to be confirm...\n", __func__, message.event);
+		return 0;
+	}
+
+	wcn_usb_info("%s flag=%d\n", __func__, atomic_read(&wcn_usb_suspend_flag));
+
+	if (!atomic_inc_return(&wcn_usb_suspend_flag)) {
+
+		for (chn = 0; chn < 32; chn++) {
+			wcn_usb_ops = chn_ops(chn);
+			if (wcn_usb_ops && wcn_usb_ops->power_notify) {
+				wcn_usb_info("%s chn[%d] power notify...\n", __func__, chn);
+				ret = wcn_usb_ops->power_notify(chn, false);
+				wcn_usb_info("%s chn[%d] suspend[%d]\n", __func__, chn, ret);
+				if (ret) {
+					wcn_usb_err("%s chn[%d] suspend failed[%d]\n", __func__, chn, ret);
+					goto not_allowed;
+				}
+			}
+		}
+
+		for (chn = 1; chn < 16; chn++) {
+			ep_to_suspend = wcn_usb_store_get_epFRchn(chn);
+			if (ep_to_suspend) {
+				wcn_usb_info("%s check tx chn[%d]\n", __func__, chn);
+				if (!usb_anchor_empty(&ep_to_suspend->submitted)) {
+					wcn_usb_err("%s tx chn[%d] remaining to be sent\n", __func__, chn);
+					ret = -1;
+					goto not_allowed;
+				}
+			}
+		}
+
+		ep_to_suspend = wcn_usb_store_get_epFRchn(25);
+		if (likely(ep_to_suspend)) {
+			wcn_usb_info("%s kill urb of chn[%d]\n", __func__, 25);
+			usb_kill_anchored_urbs(&ep_to_suspend->submitted);
+		} else {
+			wcn_usb_err("%s urb not exit of chn[%d]\n", __func__, 25);
+		}
+
+		for (chn = 16; chn < 32; chn++) {
+			ep_to_suspend = wcn_usb_store_get_epFRchn(chn);
+			if (ep_to_suspend) {
+				wcn_usb_info("%s kill urb of chn[%d]\n", __func__, chn);
+				usb_kill_anchored_urbs(&ep_to_suspend->submitted);
+			}
+		}
+
+		atomic_set(&wcn_usb_resume_flag, -1);
+	}
+
+	return 0;
+
+not_allowed:
+	atomic_set(&wcn_usb_suspend_flag, -1);
+	return ret;
+}
+
+static int wcn_usb_io_resume(struct usb_interface *intf)
+{
+	int chn, ret = 0;
+	struct mchn_ops_t *wcn_usb_ops;
+	struct wcn_usb_ep *ep_to_resume;
+
+	wcn_usb_info("%s flag=%d\n", __func__, atomic_read(&wcn_usb_resume_flag));
+
+	if (!atomic_inc_return(&wcn_usb_resume_flag)) {
+
+		wcn_usb_info("%s fire apostle\n", __func__);
+		ret = wcn_usb_apostle_begin(25);
+		if (ret) {
+			wcn_usb_err("%s apostle begin failed[%d]\n", __func__, ret);
+			goto out;
+		}
+
+		for (chn = 0; chn < 32; chn++) {
+			wcn_usb_ops = chn_ops(chn);
+			if (wcn_usb_ops && wcn_usb_ops->power_notify) {
+				wcn_usb_info("%s chn[%d] power notify...\n", __func__, chn);
+				ret = wcn_usb_ops->power_notify(chn, true);
+				wcn_usb_info("%s chn[%d] resume[%d]\n", __func__, chn, ret);
+				if (ret)
+					wcn_usb_err("%s chn[%d] resume failed[%d]\n", __func__, chn, ret);
+			}
+		}
+
+		for (chn = 16; chn < 32; chn++) {
+			if (!wcn_usb_channel_is_apostle(chn)) {
+				ep_to_resume = wcn_usb_store_get_epFRchn(chn);
+				if (ep_to_resume) {
+					wcn_usb_info("%s retrieve rx chn[%d]\n", __func__, chn);
+					wcn_usb_begin_poll_rx(chn);
+				}
+			}
+		}
+	}
+
+out:
+	atomic_set(&wcn_usb_suspend_flag, -1);
+	return 0;
+}
+
+#ifdef CONFIG_AML_BOARD
+static void wcn_usb_io_shutdown(struct device *dev)
+{
+	int chn, interface_num;
+	struct wcn_usb_ep *ep_to_suspend;
+	struct usb_interface *intf;
+
+	intf = to_usb_interface(dev);
+	interface_num = intf->cur_altsetting->desc.bInterfaceNumber;
+
+	if ((interface_plug_base + interface_num) == interface_0_plug) {
+		for (chn = 1; chn < 16; chn++) {
+			ep_to_suspend = wcn_usb_store_get_epFRchn(chn);
+			if (ep_to_suspend) {
+				wcn_usb_info("%s check tx chn[%d]\n", __func__, chn);
+				if (!usb_anchor_empty(&ep_to_suspend->submitted)) {
+					wcn_usb_err("%s tx chn[%d] remaining to be sent\n", __func__, chn);
+				}
+			}
+		}
+
+		ep_to_suspend = wcn_usb_store_get_epFRchn(25);
+		if (likely(ep_to_suspend)) {
+			wcn_usb_info("%s kill urb of chn[%d]\n", __func__, 25);
+			usb_kill_anchored_urbs(&ep_to_suspend->submitted);
+		} else {
+			wcn_usb_err("%s urb not exit of chn[%d]\n", __func__, 25);
+		}
+
+		for (chn = 16; chn < 32; chn++) {
+			ep_to_suspend = wcn_usb_store_get_epFRchn(chn);
+			if (ep_to_suspend) {
+				wcn_usb_info("%s kill urb of chn[%d]\n", __func__, chn);
+				usb_kill_anchored_urbs(&ep_to_suspend->submitted);
+			}
+		}
+	}
+}
+#endif
+
+#if 0
+
+#include <linux/freezer.h>
+
+static  struct task_struct *wcn_usb_ctrlmsg_thread;
+
+static int wcn_usb_ctrlmsg_func(void *data)
+{
+	int ret, i;
+	struct wcn_usb_ep *wcn_ep;
+	struct usb_device *udev;
+	char *buffer;
+
+	set_freezable();
+
+	do {
+		buffer = kzalloc(0xff, GFP_KERNEL);
+		if (!buffer) {
+			wcn_usb_err("%s test end because of nomem\n", __func__);
+			goto exit;
+		}
+		wcn_ep = wcn_usb_store_get_epFRchn(25);
+		if (likely(wcn_ep)) {
+			udev = wcn_ep->intf->udev;
+			ret = usb_control_msg(udev, usb_rcvctrlpipe(udev, 0), 0x06, 0x80, 0x300, 0x0, (void *)buffer, 0xff, 5000);
+			if (ret > 0) {
+				for (i = 0; i < ret; i++) {
+					wcn_usb_info("%s data[%d]=%x\n", __func__, i, buffer[i]);
+				}
+			} else {
+				wcn_usb_err("%s usb_control_msg failed[%d]\n", __func__, ret);
+			}
+		}
+		kfree(data);
+		try_to_freeze();
+		msleep(10);
+	} while (!kthread_should_stop());
+
+exit:
+	wcn_usb_info("exit %s\n", __func__);
+	return 0;
+}
+
+int start_wcn_usb_ctrlmsg_test(void)
+{
+	if (wcn_usb_ctrlmsg_thread) {
+		wcn_usb_err("%s test already started\n", __func__);
+		return 0;
+	}
+
+	wcn_usb_ctrlmsg_thread = kthread_create(wcn_usb_ctrlmsg_func, NULL, "wcn_ctrlmsg");
+	if (!wcn_usb_ctrlmsg_thread) {
+		wcn_usb_err("%s start ctrlmsg failed\n", __func__);
+		return -ENOMEM;
+	}
+	wake_up_process(wcn_usb_ctrlmsg_thread);
+
+	return 0;
+}
+
+int stop_wcn_usb_ctrlmsg_test(void)
+{
+	if (wcn_usb_ctrlmsg_thread) {
+		kthread_stop(wcn_usb_ctrlmsg_thread);
+	}
+
+	return 0;
+}
+#endif
+
+void wcn_usb_lock(void)
+{
+	wcn_usb_info("%s\n", __func__);
+	usb_lock_device(wcn_usb_store_get_epFRchn(25)->intf->udev);
+}
+
+void wcn_usb_unlock(void)
+{
+	wcn_usb_info("%s\n", __func__);
+	usb_unlock_device(wcn_usb_store_get_epFRchn(25)->intf->udev);
+}
+
 struct usb_driver wcn_usb_io_driver = {
 	.name = "wcn_usb_io",
 	.probe = wcn_usb_io_probe,
@@ -886,6 +1143,12 @@ struct usb_driver wcn_usb_io_driver = {
 	.pre_reset = wcn_usb_io_pre_reset,
 	.post_reset = wcn_usb_io_post_reset,
 	.id_table = wcn_usb_io_id_table,
+	.suspend = wcn_usb_io_suspend,
+	.resume = wcn_usb_io_resume,
+	.reset_resume = wcn_usb_io_resume,
+#ifdef CONFIG_AML_BOARD
+	.drvwrap.driver.shutdown = wcn_usb_io_shutdown,
+#endif
 	.supports_autosuspend = 1,
 };
 

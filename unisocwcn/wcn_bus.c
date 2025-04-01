@@ -146,6 +146,11 @@ int buf_list_alloc(int chn, struct mbuf_t **head,
 	struct mbuf_t *cur, *temp_head, *temp_tail = NULL;
 	struct chn_info_t *chn_inf = chn_info();
 
+	if(NULL == chn_inf->ops[chn]) {
+		pr_err("%s chn[%d] ops is NULL, cannot alloc buffer list\n", __func__, chn);
+		return -1;
+	}
+
 	pool = &(chn_inf->pool[chn]);
 
 	if ((*num <= 0) || (pool->free <= 0)) {
@@ -153,7 +158,7 @@ int buf_list_alloc(int chn, struct mbuf_t **head,
 			__func__, chn, *num, pool->free);
 		*num = 0;
 		*head = *tail = NULL;
-		return -1;
+		return -2;
 	}
 
 	spin_lock_bh(&(pool->lock));
@@ -204,11 +209,17 @@ int buf_list_free(int chn, struct mbuf_t *head, struct mbuf_t *tail, int num)
 	struct buffer_pool_t *pool;
 	struct chn_info_t *chn_inf = chn_info();
 
+	if(NULL == chn_inf->ops[chn]) {
+		pr_err("%s chn[%d] ops is NULL, return\n", __func__, chn);
+		return -1;
+	}
+
+
 	if ((head == NULL) || (tail == NULL) || (num == 0)) {
 		pr_err("%s(%d, 0x%lx, 0x%lx, %d)\n", __func__, chn,
 			(unsigned long)virt_to_phys(head),
 			(unsigned long)virt_to_phys(tail), num);
-		return -1;
+		return -2;
 	}
 
 	pool = &(chn_inf->pool[chn]);

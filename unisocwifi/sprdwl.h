@@ -59,6 +59,10 @@
 #define SPRDWL_GET_LE32(addr)		le32_to_cpu((addr))
 #endif
 
+#if LINUX_VERSION_CODE < KERNEL_VERSION(3, 14, 0)
+#define ether_addr_copy(dst, src) memcpy(dst, src, ETH_ALEN)
+#endif
+
 /* the max length between data_head and net data */
 #define SPRDWL_SKB_HEAD_RESERV_LEN	16
 #define SPRDWL_COUNTRY_CODE_LEN		2
@@ -69,6 +73,20 @@
 #ifdef OTT_UWE
 #define FOUR_BYTES_ALIGN_OFFSET 3
 #endif
+
+#define	SPRDWL_WAKE_HOST		1
+#define	SPRDWL_NO_WAKE_HOST		2
+struct sprdwl_suspend_resume_connect {
+	struct cfg80211_connect_params connect_params;
+	struct ieee80211_channel channel;
+	struct ieee80211_channel channel_hint;
+	u8 ie[100];
+	u8 key[WLAN_MAX_KEY_LEN];
+	u8 bssid[ETH_ALEN];
+	u8 bssid_hint[ETH_ALEN];
+	u8 ssid[IEEE80211_MAX_SSID_LEN];
+	bool reconnect_flag;
+};
 
 struct sprdwl_mc_filter {
 	bool mc_change;
@@ -87,6 +105,12 @@ struct scan_result {
 	struct list_head list;
 	int signal;
 	unsigned char bssid[6];
+};
+
+struct sprdwl_throughtput {
+	u64 bytes;
+	u32 sec;
+	u32 throughtput;
 };
 
 struct sprdwl_vif {
@@ -137,13 +161,12 @@ struct sprdwl_vif {
 	struct cfg80211_chan_def dfs_chandef;
 #endif
 	u8 wps_flag;
-#ifdef SYNC_DISCONNECT
-	atomic_t sync_disconnect_event;
-	u16 disconnect_event_code;
-	wait_queue_head_t disconnect_wq;
-#endif
+	struct completion disconnect_completed;
 	bool has_rand_mac;
 	u8 random_mac[ETH_ALEN];
+	struct sprdwl_throughtput throughtput_tx;
+	struct sprdwl_throughtput throughtput_rx;
+	struct sprdwl_suspend_resume_connect suspend_resume_connect;
 };
 
 enum sprdwl_hw_type {
@@ -175,6 +198,8 @@ struct wmm_params_element {
 struct sprdwl_wmmac_params {
 	struct wmm_ac_params ac[4];
 	struct timer_list wmmac_edcaf_timer;
+	struct timer_list wmmac_vo_timer;
+	struct timer_list wmmac_vi_timer;
 };
 #endif
 
@@ -185,14 +210,11 @@ struct sprdwl_channel_list {
 
 #ifdef CP2_RESET_SUPPORT
 struct sprlwl_drv_cp_sync {
-	char country[2];
 	unsigned char fw_stat[SPRDWL_MODE_MAX];
-	bool scan_not_allowed;
-	bool cmd_not_allowed;
+	bool cp2_reset_flag;
 	struct regulatory_request request;
-
 };
-#endif
+#endif /*CP2_RESET_SUPPORT*/
 
 struct sprdwl_priv {
 	struct wiphy *wiphy;
@@ -283,10 +305,11 @@ struct sprdwl_priv {
 #define OTT_NO_SUPT	(0)
 #define OTT_SUPT	(1)
 	unsigned char ott_supt;
+	__le32 extend_feature;
 
 #ifdef CP2_RESET_SUPPORT
 	struct sprlwl_drv_cp_sync sync;
-#endif
+#endif /*CP2_RESET_SUPPORT*/
 };
 
 struct sprdwl_eap_hdr {
@@ -341,6 +364,12 @@ extern struct device *sprdwl_dev;
 		} \
 	} while (0)
 
+#define wl_trace(fmt, args...) \
+	do { \
+		if (sprdwl_debug_level >= L_ERR) \
+			trace_printk("sprdwl:" fmt, ##args); \
+	} while (0)
+
 #define wl_err_ratelimited(fmt, args...) \
 	do { \
 		if (sprdwl_debug_level >= L_ERR) \
@@ -359,12 +388,6 @@ extern struct device *sprdwl_dev;
 		if (sprdwl_debug_level >= level) { \
 			print_hex_dump(KERN_ERR, _str, _type, _row, _gp, _buf, _len, _ascii); \
 		} \
-	} while (0)
-
-#define wl_err_ratelimited(fmt, args...) \
-	do { \
-		if (sprdwl_debug_level >= L_ERR) \
-			printk_ratelimited("sprdwl:" fmt, ##args); \
 	} while (0)
 
 #ifdef ACS_SUPPORT

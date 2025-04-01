@@ -1,6 +1,6 @@
 obj-$(CONFIG_AML_WIFI_DEVICE_UWE5621) += unisocwcn/
 obj-$(CONFIG_WLAN_UWE5622)    += unisocwifi/
-obj-$(CONFIG_TTY_OVERY_SDIO)  += tty-sdio/
+obj-$(CONFIG_TTY_OVERY_SDIO)  += unisocbt/
 
 SRC_PATH := $(shell pwd)/drivers/net/wireless/uwe5621ds-aml
 UNISOCWCN_DIR := $(shell cd $(SRC_PATH)/unisocwcn/ && /bin/pwd)

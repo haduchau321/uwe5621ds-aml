@@ -26,6 +26,7 @@
 #include <net/ip6_checksum.h>
 #include "debug.h"
 #include "tcp_ack.h"
+#include <linux/kthread.h>
 
 #ifdef RX_HW_CSUM
 bool mh_ipv6_ext_hdr(unsigned char nexthdr)
@@ -137,30 +138,47 @@ void sprdwl_rx_send_cmd(struct sprdwl_intf *intf, void *data, int len,
 
 	sprdwl_rx_send_cmd_process(priv, data, len, id, ctx_id);
 }
+#ifdef SPRD_RX_THREAD
+/* seam for rx_thread */
+void rx_down(struct sprdwl_rx_if *rx_if)
+{
+	wait_for_completion_interruptible(&rx_if->rx_completed);
+}
 
+void rx_up(struct sprdwl_rx_if *rx_if)
+{
+	complete(&rx_if->rx_completed);
+}
+#endif
 void sprdwl_rx_process(struct sprdwl_rx_if *rx_if, struct sk_buff *pskb)
 {
-#ifndef SPLIT_STACK
-	struct sprdwl_priv *priv = rx_if->intf->priv;
 	struct sk_buff *reorder_skb = NULL, *skb = NULL;
-#endif
 
 	/* TODO: Add rx mh data process */
-#ifdef SPLIT_STACK
 	reorder_data_process(&rx_if->ba_entry, pskb);
-
-	if (!work_pending(&rx_if->rx_net_work))
-		queue_work(rx_if->rx_net_workq, &rx_if->rx_net_work);
-#else
-	reorder_skb = reorder_data_process(&rx_if->ba_entry, pskb);
-
+	reorder_skb = reorder_get_skb_list(&rx_if->ba_entry);
 	while (reorder_skb) {
 		SPRDWL_GET_FIRST_SKB(skb, reorder_skb);
 		skb = defrag_data_process(&rx_if->defrag_entry, skb);
 		if (skb)
-			sprdwl_rx_skb_process(priv, skb);
+			skb_queue_tail(&rx_if->net_rx_list, skb);
 	}
-#endif
+
+	if (!skb_queue_empty(&rx_if->net_rx_list)) {
+#if defined RX_NAPI
+		if (rx_if->napi_rx_enable)
+			napi_schedule(&rx_if->napi_rx);
+#elif defined SPLIT_STACK
+		if (!work_pending(&rx_if->rx_net_work))
+			queue_work(rx_if->rx_net_workq, &rx_if->rx_net_work);
+#else/*SPLIT_STACK*/
+		while (!skb_queue_empty(&rx_if->net_rx_list)) {
+			skb = skb_dequeue(&rx_if->net_rx_list);
+			if (skb)
+				sprdwl_rx_skb_process(rx_if->intf->priv, skb);
+		}
+#endif/*SPLIT_STACK*/
+	}
 }
 
 static inline void
@@ -193,22 +211,23 @@ void sprdwl_rx_net_work_queue(struct work_struct *work)
 {
 	struct sprdwl_rx_if *rx_if;
 	struct sprdwl_priv *priv;
-	struct sk_buff *reorder_skb = NULL, *skb = NULL;
+	struct sk_buff *skb = NULL;
 
 	rx_if = container_of(work, struct sprdwl_rx_if, rx_net_work);
 	priv = rx_if->intf->priv;
 
-	reorder_skb = reorder_get_skb_list(&rx_if->ba_entry);
-	while (reorder_skb) {
-		SPRDWL_GET_FIRST_SKB(skb, reorder_skb);
-		skb = defrag_data_process(&rx_if->defrag_entry, skb);
+	while (!skb_queue_empty(&rx_if->net_rx_list)) {
+		skb = skb_dequeue(&rx_if->net_rx_list);
 		if (skb)
 			sprdwl_rx_skb_process(priv, skb);
 	}
 }
 #endif
-
+#ifdef SPRD_RX_THREAD
+static int sprdwl_rx_work_queue(void *arg)
+#else
 static void sprdwl_rx_work_queue(struct work_struct *work)
+#endif
 {
 	struct sprdwl_msg_buf *msg;
 	struct sprdwl_priv *priv;
@@ -218,161 +237,185 @@ static void sprdwl_rx_work_queue(struct work_struct *work)
 	int len = 0, num = 0;
 	/*struct sprdwl_vif *vif;
 	struct sprdwl_cmd_hdr *hdr;*/
-
+#ifdef SPRD_RX_THREAD
+	struct sched_param param;
+	rx_if = (struct sprdwl_rx_if *)arg;
+#else
 	rx_if = container_of(work, struct sprdwl_rx_if, rx_work);
+#endif
 	intf = rx_if->intf;
 	priv = intf->priv;
 
-#ifndef RX_NAPI
-	if (!intf->exit && !sprdwl_peek_msg_buf(&rx_if->rx_list))
-		sprdwl_rx_process(rx_if, NULL);
+#ifdef SPRD_RX_THREAD
+	param.sched_priority = 1;
+	sched_setscheduler(current, SCHED_FIFO, &param);
+	while(1) {
+		rx_down(rx_if);
+		if(intf->exit)
+			break;
 #endif
 
-	while ((msg = sprdwl_peek_msg_buf(&rx_if->rx_list))) {
-		if (intf->exit)
-			goto next;
+  	if (!intf->exit && !sprdwl_peek_msg_buf(&rx_if->rx_list))
+  		sprdwl_rx_process(rx_if, NULL);
 
-		pos = msg->tran_data;
-		for (num = msg->len; num > 0; num--) {
-			pos = sprdwl_get_rx_data(intf, pos, &data, &tran_data,
-						 &len, intf->hif_offset);
+  	while ((msg = sprdwl_peek_msg_buf(&rx_if->rx_list))) {
+  		if (intf->exit)
+  			goto next;
 
-			wl_debug("%s: rx type:%d, num = %d\n",
-				__func__, SPRDWL_HEAD_GET_TYPE(data), num);
+  		pos = msg->tran_data;
+  		for (num = msg->len; num > 0; num--) {
+  			pos = sprdwl_get_rx_data(intf, pos, &data, &tran_data,
+  						 &len, intf->hif_offset);
 
-			/* len in mbuf_t just means buffer len in ADMA,
-			 * so need to get data len in sdiohal_puh
-			 */
-			if (sprdwl_debug_level >= L_DBG) {
-				int print_len =
-					((struct sdiohal_puh *)tran_data)->len;
+  			wl_debug("%s: rx type:%d, num = %d\n",
+  				__func__, SPRDWL_HEAD_GET_TYPE(data), num);
 
-				if (print_len > 100)
-					print_len = 100;
-				sprdwl_hex_dump("rx data",
-						(unsigned char *)data,
-						print_len);
-			}
-#if 0
-			/* to check is the rsp_cnt from CP2
-			* eqaul to rsp_cnt count on driver side.
-			* if not equal, must be lost on SDIOHAL/PCIE.
-			* assert to warn CP2
-			*/
-			hdr = (struct sprdwl_cmd_hdr *)data;
-			vif = ctx_id_to_vif(priv, hdr->common.ctx_id);
-			if ((SPRDWL_HEAD_GET_TYPE(data) == SPRDWL_TYPE_CMD ||
-				SPRDWL_HEAD_GET_TYPE(data) == SPRDWL_TYPE_EVENT)) {
-				if (rx_if->rsp_event_cnt != hdr->rsp_cnt) {
-					wl_info("%s, %d, rsp_event_cnt=%d, hdr->cnt=%d\n",
-						__func__, __LINE__,
-						rx_if->rsp_event_cnt, hdr->rsp_cnt);
+  			/* len in mbuf_t just means buffer len in ADMA,
+  			 * so need to get data len in sdiohal_puh
+  			 */
+  			if (sprdwl_debug_level >= L_DBG) {
+  				int print_len =
+  					((struct sdiohal_puh *)tran_data)->len;
 
-					if (hdr->rsp_cnt == 0) {
-						rx_if->rsp_event_cnt = 0;
-						wl_info("%s reset rsp_event_cnt", __func__);
-					}
-					/* hdr->rsp_cnt=0 means it's a old version CP2,
-					* so do not assert.
-					* vif=NULL means driver not init ok,
-					* send cmd may cause crash
-					*/
-					if (vif != NULL && hdr->rsp_cnt != 0) {
-						wl_err("cmd_id:%d resp count = %d error\n",
-								hdr->cmd_id, hdr->rsp_cnt);
-						sprdwl_send_assert_cmd(vif, hdr->cmd_id, RSP_CNT_ERROR);
-					}
-				}
+  				if (print_len > 100)
+  					print_len = 100;
+  				sprdwl_hex_dump("rx data",
+  						(unsigned char *)data,
+  						print_len);
+  			}
+  #if 0
+  			/* to check is the rsp_cnt from CP2
+  			* eqaul to rsp_cnt count on driver side.
+  			* if not equal, must be lost on SDIOHAL/PCIE.
+  			* assert to warn CP2
+  			*/
+  			hdr = (struct sprdwl_cmd_hdr *)data;
+  			vif = ctx_id_to_vif(priv, hdr->common.ctx_id);
+  			if ((SPRDWL_HEAD_GET_TYPE(data) == SPRDWL_TYPE_CMD ||
+  				SPRDWL_HEAD_GET_TYPE(data) == SPRDWL_TYPE_EVENT)) {
+  				if (rx_if->rsp_event_cnt != hdr->rsp_cnt) {
+  					wl_info("%s, %d, rsp_event_cnt=%d, hdr->cnt=%d\n",
+  						__func__, __LINE__,
+  						rx_if->rsp_event_cnt, hdr->rsp_cnt);
 
-				rx_if->rsp_event_cnt++;
-			}
-			sprdwl_put_vif(vif);
-#endif
-			if (unlikely(priv->wakeup_tracer.resume_flag))
-				trace_rx_wakeup(&priv->wakeup_tracer, data,
-						tran_data + intf->hif_offset);
+  					if (hdr->rsp_cnt == 0) {
+  						rx_if->rsp_event_cnt = 0;
+  						wl_info("%s reset rsp_event_cnt", __func__);
+  					}
+  					/* hdr->rsp_cnt=0 means it's a old version CP2,
+  					* so do not assert.
+  					* vif=NULL means driver not init ok,
+  					* send cmd may cause crash
+  					*/
+  					if (vif != NULL && hdr->rsp_cnt != 0) {
+  						wl_err("cmd_id:%d resp count = %d error\n",
+  								hdr->cmd_id, hdr->rsp_cnt);
+  						sprdwl_send_assert_cmd(vif, hdr->cmd_id, RSP_CNT_ERROR);
+  					}
+  				}
 
-			switch (SPRDWL_HEAD_GET_TYPE(data)) {
-			case SPRDWL_TYPE_DATA:
-#if defined FPGA_LOOPBACK_TEST
-				if (intf->loopback_n < 500) {
-					unsigned char *r_buf;
+  				rx_if->rsp_event_cnt++;
+  			}
+  			sprdwl_put_vif(vif);
+  #endif
+  			if (unlikely(priv->wakeup_tracer.resume_flag))
+  				trace_rx_wakeup(&priv->wakeup_tracer, data,
+  						tran_data + intf->hif_offset);
 
-					r_buf = (unsigned char *)data;
-					sprdwl_intf_tx_data_fpga_test(intf,
-								      r_buf,
-								      len);
-				}
-#else
-				if (msg->len > SPRDWL_MAX_DATA_RXLEN)
-					wl_err("err rx data too long:%d > %d\n",
-					       len, SPRDWL_MAX_DATA_RXLEN);
-				sprdwl_rx_data_process(priv, data);
-#endif /* FPGA_LOOPBACK_TEST */
-				break;
-			case SPRDWL_TYPE_CMD:
-				if (msg->len > SPRDWL_MAX_CMD_RXLEN)
-					wl_err("err rx cmd too long:%d > %d\n",
-					       len, SPRDWL_MAX_CMD_RXLEN);
-				sprdwl_rx_rsp_process(priv, data);
-				break;
-			case SPRDWL_TYPE_PKT_LOG:
-				if (sprdwl_pkt_log_save(intf, data) == 1)
-					wl_err("%s: pkt log file open or create	failed!\n",
-							__func__);
-				break;
-			case SPRDWL_TYPE_EVENT:
-				if (msg->len > SPRDWL_MAX_CMD_RXLEN)
-					wl_err("err rx event too long:%d > %d\n",
-					       len, SPRDWL_MAX_CMD_RXLEN);
-				sprdwl_rx_event_process(priv, data);
-				break;
-			case SPRDWL_TYPE_DATA_SPECIAL:
-				debug_ts_leave(RX_SDIO_PORT);
-				debug_ts_enter(RX_SDIO_PORT);
+  			switch (SPRDWL_HEAD_GET_TYPE(data)) {
+  			case SPRDWL_TYPE_DATA:
+  #if defined FPGA_LOOPBACK_TEST
+  				if (intf->loopback_n < 500) {
+  					unsigned char *r_buf;
 
-				if (msg->len > SPRDWL_MAX_DATA_RXLEN)
-					wl_err("err data trans too long:%d > %d\n",
-					       len, SPRDWL_MAX_CMD_RXLEN);
-				sprdwl_rx_mh_data_process(rx_if, tran_data, len,
-							  msg->buffer_type);
-				tran_data = NULL;
-				data = NULL;
-				break;
-			case SPRDWL_TYPE_DATA_PCIE_ADDR:
-				if (intf->priv->hw_type != SPRDWL_HW_PCIE) {
-					wl_err("error get pcie addr data!\n");
-					break;
-				}
-				if (msg->len > SPRDWL_MAX_CMD_RXLEN)
-					wl_err("err rx mh data too long:%d > %d\n",
-					       len, SPRDWL_MAX_DATA_RXLEN);
-				sprdwl_rx_mh_addr_process(rx_if, tran_data, len,
-							  msg->buffer_type);
-				tran_data = NULL;
-				data = NULL;
-				break;
-			default:
-				wl_err("rx unknown type:%d\n",
-				       SPRDWL_HEAD_GET_TYPE(data));
-				break;
-			}
+  					r_buf = (unsigned char *)data;
+  					sprdwl_intf_tx_data_fpga_test(intf,
+  								      r_buf,
+  								      len);
+  				}
+  #else
+  				if (msg->len > SPRDWL_MAX_DATA_RXLEN)
+  					wl_err("err rx data too long:%d > %d\n",
+  					       len, SPRDWL_MAX_DATA_RXLEN);
+  				sprdwl_rx_data_process(priv, data);
+  #endif /* FPGA_LOOPBACK_TEST */
+  				break;
+  			case SPRDWL_TYPE_CMD:
+  				if (msg->len > SPRDWL_MAX_CMD_RXLEN)
+  					wl_err("err rx cmd too long:%d > %d\n",
+  					       len, SPRDWL_MAX_CMD_RXLEN);
+  				sprdwl_rx_rsp_process(priv, data);
+  				break;
+  			case SPRDWL_TYPE_PKT_LOG:
+  				if (sprdwl_pkt_log_save(intf, data) == 1)
+  					wl_err("%s: pkt log file open or create	failed!\n",
+  							__func__);
+  				break;
+  			case SPRDWL_TYPE_EVENT:
+  				if (msg->len > SPRDWL_MAX_CMD_RXLEN)
+  					wl_err("err rx event too long:%d > %d\n",
+  					       len, SPRDWL_MAX_CMD_RXLEN);
+  				sprdwl_rx_event_process(priv, data);
+  				break;
+  			case SPRDWL_TYPE_DATA_SPECIAL:
+  				debug_ts_leave(RX_SDIO_PORT);
+  				debug_ts_enter(RX_SDIO_PORT);
 
-			/* Marlin3 should release buffer by ourself */
-			if (tran_data)
-				sprdwl_free_data(tran_data, msg->buffer_type);
+  				if (msg->len > SPRDWL_MAX_DATA_RXLEN)
+  					wl_err("err data trans too long:%d > %d\n",
+  					       len, SPRDWL_MAX_CMD_RXLEN);
+  				sprdwl_rx_mh_data_process(rx_if, tran_data, len,
+  							  msg->buffer_type);
+  				tran_data = NULL;
+  				data = NULL;
+  				break;
+  			case SPRDWL_TYPE_DATA_PCIE_ADDR:
+  				if (intf->priv->hw_type != SPRDWL_HW_PCIE) {
+  					wl_err("error get pcie addr data!\n");
+  					break;
+  				}
+  				if (msg->len > SPRDWL_MAX_CMD_RXLEN)
+  					wl_err("err rx mh data too long:%d > %d\n",
+  					       len, SPRDWL_MAX_DATA_RXLEN);
+  				sprdwl_rx_mh_addr_process(rx_if, tran_data, len,
+  							  msg->buffer_type);
+  				tran_data = NULL;
+  				data = NULL;
+  				break;
+  			default:
+  				wl_err("rx unknown type:%d\n",
+  				       SPRDWL_HEAD_GET_TYPE(data));
+  				break;
+  			}
 
-			if (!pos) {
-				wl_debug("%s no mbuf\n", __func__);
-				break;
-			}
-		}
-next:
-		/* TODO: Should we free mbuf one by one? */
-		sprdwl_free_rx_data(intf, msg->fifo_id, msg->tran_data,
-				    msg->data, msg->len);
-		sprdwl_dequeue_msg_buf(msg, &rx_if->rx_list);
+  			/* Marlin3 should release buffer by ourself */
+  			if (tran_data)
+  				sprdwl_free_data(tran_data, msg->buffer_type);
+
+  			if (!pos) {
+  				wl_debug("%s no mbuf\n", __func__);
+  				break;
+  			}
+  		}
+  next:
+  		/* TODO: Should we free mbuf one by one? */
+  		sprdwl_free_rx_data(intf, msg->fifo_id, msg->tran_data,
+  				    msg->data, msg->len);
+  		sprdwl_dequeue_msg_buf(msg, &rx_if->rx_list);
+  	}
+#ifdef SPRD_RX_THREAD
 	}
+
+	for (;;) {
+		set_current_state(TASK_INTERRUPTIBLE);
+		if (kthread_should_stop())
+			break;
+		schedule();
+	}
+	__set_current_state(TASK_RUNNING);
+
+	return 0;
+#endif
 }
 
 /*
@@ -413,13 +456,13 @@ int sprdwl_pkt_log_save(struct sprdwl_intf *intf, void *data)
 		}
 		vfs_write(intf->pfile, temphdr, 6, &intf->lp);
 		vfs_write(intf->pfile, &temp_space, 1, &intf->lp);
-		memset(tempdata, 0x00, 2);
+		memset(tempdata, 0x00, 3);
 		for (i = 0; i < data_len; i++) {
 				sprintf(tempdata, "%02x",
 						*(unsigned char *)data);
 				vfs_write(intf->pfile, tempdata,
 						  2, &intf->lp);
-				memset(tempdata, 0x00, 2);
+				memset(tempdata, 0x00, 3);
 				if ((i != 0) && ((i + 1)%16 == 0)) {
 					if (i < (data_len - 1)) {
 						vfs_write(intf->pfile, &temp_enter,
@@ -452,107 +495,51 @@ int sprdwl_pkt_log_save(struct sprdwl_intf *intf, void *data)
 #ifdef RX_NAPI
 static int sprdwl_netdev_poll_rx(struct napi_struct *napi, int budget)
 {
-	struct sprdwl_msg_buf *msg;
-	struct sprdwl_priv *priv;
 	struct sprdwl_rx_if *rx_if;
-	struct sprdwl_intf *intf;
-	void *pos = NULL, *data = NULL, *tran_data = NULL;
-	int len = 0, num = 0;
-	int print_len;
-
-	int quota = budget;
-	int done;
+	struct sprdwl_priv *priv;
+	struct sk_buff *skb = NULL;
+	int work_done = 0;
 
 	rx_if = container_of(napi, struct sprdwl_rx_if, napi_rx);
-	intf = rx_if->intf;
-	priv = intf->priv;
+	priv = rx_if->intf->priv;
 
-	if (!intf->exit && !sprdwl_peek_msg_buf(&rx_if->rx_data_list))
-		sprdwl_rx_process(rx_if, NULL);
+	while ((work_done < budget) && (!skb_queue_empty(&rx_if->net_rx_list))) {
+		skb = skb_dequeue(&rx_if->net_rx_list);
+		if (skb)
+			sprdwl_rx_skb_process(priv, skb);
 
-	while (quota && (msg = sprdwl_peek_msg_buf(&rx_if->rx_data_list))) {
-		if (intf->exit)
-			goto next;
-
-		pos = msg->tran_data;
-		for (num = msg->len; num > 0; num--) {
-			pos = sprdwl_get_rx_data(intf, pos, &data, &tran_data,
-						 &len, intf->hif_offset);
-
-			wl_info("%s: rx type:%d\n",
-				__func__, SPRDWL_HEAD_GET_TYPE(data));
-
-			/* len in mbuf_t just means buffer len in ADMA,
-			 * so need to get data len in sdiohal_puh
-			 */
-			if (((struct sdiohal_puh *)tran_data)->len > 100)
-				print_len = 100;
-			else
-				print_len = ((struct sdiohal_puh *)
-					     tran_data)->len;
-			sprdwl_hex_dump("rx data",
-					(unsigned char *)data, print_len);
-
-			if (sprdwl_sdio_process_credit(intf, data))
-				goto free;
-
-			switch (SPRDWL_HEAD_GET_TYPE(data)) {
-			case SPRDWL_TYPE_DATA_SPECIAL:
-				if (msg->len > SPRDWL_MAX_DATA_RXLEN)
-					wl_err("err data trans too long:%d > %d\n",
-					       len, SPRDWL_MAX_CMD_RXLEN);
-				sprdwl_rx_mh_data_process(rx_if, tran_data, len,
-							  msg->buffer_type);
-				tran_data = NULL;
-				data = NULL;
-				break;
-			case SPRDWL_TYPE_DATA_PCIE_ADDR:
-				if (msg->len > SPRDWL_MAX_CMD_RXLEN)
-					wl_err("err rx mh data too long:%d > %d\n",
-					       len, SPRDWL_MAX_DATA_RXLEN);
-				sprdwl_rx_mh_addr_process(rx_if, tran_data, len,
-							  msg->buffer_type);
-				tran_data = NULL;
-				data = NULL;
-				break;
-			default:
-				wl_err("rx unknown type:%d\n",
-				       SPRDWL_HEAD_GET_TYPE(data));
-				break;
-			}
-free:
-			/* Marlin3 should release buffer by ourself */
-			if (tran_data)
-				sprdwl_free_data(tran_data, msg->buffer_type);
-
-			if (!pos) {
-				wl_debug("%s no mbuf\n", __func__);
-				break;
-			}
-		}
-next:
-		/* TODO: Should we free mbuf one by one? */
-		sprdwl_free_rx_data(intf, msg->fifo_id, msg->tran_data,
-				    msg->data, msg->len);
-		sprdwl_dequeue_msg_buf(msg, &rx_if->rx_data_list);
-		quota--;
+		work_done++;
 	}
 
-	done = budget - quota;
-	if (done <= 1)
+	if (work_done < budget) {
 		napi_complete(napi);
+		if ((rx_if->napi_rx_enable) && (!skb_queue_empty(&rx_if->net_rx_list)))
+			napi_schedule(napi);
+	}
 
-	return done;
+	return work_done;
 }
 
 void sprdwl_rx_napi_init(struct net_device *ndev, struct sprdwl_intf *intf)
 {
 	struct sprdwl_rx_if *rx_if = (struct sprdwl_rx_if *)intf->sprdwl_rx;
 
-	netif_napi_add(ndev, &rx_if->napi_rx, sprdwl_netdev_poll_rx, 16);
+	netif_napi_add(ndev, &rx_if->napi_rx, sprdwl_netdev_poll_rx, 128);
 	napi_enable(&rx_if->napi_rx);
+	rx_if->napi_rx_enable = true;
 }
-#endif
+
+void sprdwl_rx_napi_deinit(struct sprdwl_intf *intf)
+{
+	struct sprdwl_rx_if *rx_if = (struct sprdwl_rx_if *)intf->sprdwl_rx;
+
+	rx_if->napi_rx_enable = false;
+	napi_disable(&rx_if->napi_rx);
+	netif_napi_del(&rx_if->napi_rx);
+}
+#endif/*RX_NAPI*/
+
+#define RX_THREAD_NAME	"SPRD_RX_THREAD"
 
 int sprdwl_rx_init(struct sprdwl_intf *intf)
 {
@@ -573,15 +560,16 @@ int sprdwl_rx_init(struct sprdwl_intf *intf)
 		goto err_rx_list;
 	}
 
-#ifdef RX_NAPI
-	ret = sprdwl_msg_init(SPRDWL_RX_MSG_NUM, &rx_if->rx_data_list);
-	if (ret) {
-		wl_err("%s tx_buf create failed: %d\n",
-		       __func__, ret);
-		goto err_rx_data_list;
+#ifdef SPRD_RX_THREAD
+  /* init rx_work thread */
+	rx_if->rx_thread =
+		kthread_create(sprdwl_rx_work_queue, (void*)rx_if, RX_THREAD_NAME);
+	if (IS_ERR_OR_NULL(rx_if->rx_thread)) {
+		wl_err("%s SPRDWL_RX_THREAD create failed\n", __func__);
+		ret = -ENOMEM;
+		goto err_rx_work;
 	}
-#endif
-
+#else
 	/* init rx_work */
 	rx_if->rx_queue =
 		alloc_ordered_workqueue("SPRDWL_RX_QUEUE", WQ_MEM_RECLAIM |
@@ -594,7 +582,7 @@ int sprdwl_rx_init(struct sprdwl_intf *intf)
 
 	/*init rx_queue*/
 	INIT_WORK(&rx_if->rx_work, sprdwl_rx_work_queue);
-
+#endif
 #ifdef SPLIT_STACK
 	rx_if->rx_net_workq = alloc_ordered_workqueue("SPRDWL_RX_NET_QUEUE",
 					WQ_HIGHPRI | WQ_CPU_INTENSIVE |
@@ -622,10 +610,16 @@ int sprdwl_rx_init(struct sprdwl_intf *intf)
 	}
 
 	sprdwl_reorder_init(&rx_if->ba_entry);
+	skb_queue_head_init(&rx_if->net_rx_list);
 
 	intf->lp = 0;
 	intf->sprdwl_rx = (void *)rx_if;
 	rx_if->intf = intf;
+
+#ifdef SPRD_RX_THREAD
+	init_completion(&rx_if->rx_completed);
+	wake_up_process(rx_if->rx_thread);
+#endif
 
 	return ret;
 
@@ -636,12 +630,13 @@ err_rx_defrag:
 	destroy_workqueue(rx_if->rx_net_workq);
 err_rx_net_work:
 #endif
+#ifndef SPRD_RX_THREAD
 	destroy_workqueue(rx_if->rx_queue);
-err_rx_work:
-#ifdef RX_NAPI
-	sprdwl_msg_deinit(&rx_if->rx_data_list);
-err_rx_data_list:
+#else
+	kthread_stop(rx_if->rx_thread);
+	rx_if->rx_thread = NULL;
 #endif
+err_rx_work:
 	sprdwl_msg_deinit(&rx_if->rx_list);
 err_rx_list:
 	kfree(rx_if);
@@ -652,9 +647,23 @@ err_rx_if:
 int sprdwl_rx_deinit(struct sprdwl_intf *intf)
 {
 	struct sprdwl_rx_if *rx_if = (struct sprdwl_rx_if *)intf->sprdwl_rx;
+	struct sk_buff *skb;
 
+#ifdef SPRD_RX_THREAD
+	if (rx_if->rx_thread) {
+		rx_up(rx_if);
+		if (!strncmp(rx_if->rx_thread->comm, RX_THREAD_NAME,
+				strlen(RX_THREAD_NAME))) {
+			kthread_stop(rx_if->rx_thread);
+			rx_if->rx_thread = NULL;
+		} else {
+			wl_err("rx thread name is : %s\n", rx_if->rx_thread->comm);
+		}
+	}
+#else
 	flush_workqueue(rx_if->rx_queue);
 	destroy_workqueue(rx_if->rx_queue);
+#endif
 
 #ifdef SPLIT_STACK
 	flush_workqueue(rx_if->rx_net_workq);
@@ -662,10 +671,9 @@ int sprdwl_rx_deinit(struct sprdwl_intf *intf)
 #endif
 
 	sprdwl_msg_deinit(&rx_if->rx_list);
-#ifdef RX_NAPI
-	sprdwl_msg_deinit(&rx_if->rx_data_list);
-	napi_disable(&rx_if->napi_rx);
-#endif
+
+	while ((skb = skb_dequeue(&rx_if->net_rx_list)) != NULL)
+		kfree_skb(skb);
 
 	sprdwl_defrag_deinit(&rx_if->defrag_entry);
 	sprdwl_mm_deinit(&rx_if->mm_entry, intf);

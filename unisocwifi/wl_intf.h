@@ -22,7 +22,11 @@
 #include <linux/wait.h>
 #include <linux/spinlock.h>
 #include <linux/workqueue.h>
+
+#ifdef CPUFREQ_UPDATE_SUPPORT
 #include <linux/cpufreq.h>
+#endif /* CPUFREQ_UPDATE_SUPPORT */
+
 #include "wl_core.h"
 #include <wcn_bus.h>
 
@@ -58,6 +62,12 @@
 
 #define BOOST_TXNUM_LEVEL	16
 #define BOOST_RXNUM_LEVEL	16
+
+/*will not drop TCP ACK if TCPRX tp under this Mb level*/
+#define DROPACK_TP_TH_IN_M	40
+
+/*count RX TP timer in ms*/
+#define RX_TP_COUNT_IN_MS	500
 
 #ifdef SPRDWL_TX_SELF
 #include <linux/wakelock.h>
@@ -294,9 +304,16 @@ int sprdwl_add_topop_list(int chn, struct mbuf_t *head,
 				struct mbuf_t *tail, int num);
 enum sprdwl_hw_type get_hwintf_type(void);
 void set_coex_bt_on_off(u8 action);
+
+#ifdef CPUFREQ_UPDATE_SUPPORT
 int sprdwl_notifier_boost(struct notifier_block *nb, unsigned long event, void *data);
 void sprdwl_boost(void);
 void sprdwl_unboost(void);
+#endif /* CPUFREQ_UPDATE_SUPPORT */
+
 void adjust_txnum_level(char *buf, unsigned char offset);
 void adjust_rxnum_level(char *buf, unsigned char offset);
+void sprdwl_bus_deinit(void);
+
+void sprdwl_count_rx_tp_tcp_ack(struct sprdwl_intf *intf, u32 len);
 #endif /* __SPRDWL_INTF_SDIO_SC2355_H__ */

@@ -48,6 +48,7 @@ struct sprdwl_work {
 #define SPRDWL_WORK_FW_PWR_DOWN 16
 #define SPRDWL_WORK_HOST_WAKEUP_FW 17
 #define SPRDWL_WORK_VOWIFI_DATA_PROTECTION 18
+#define SPRDWL_WORK_BA_MGMT_DELBA 19
 	u8 id;
 	u32 len;
 	u8 data[0];

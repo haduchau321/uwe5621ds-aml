@@ -39,6 +39,7 @@ int sprdwl_debug_level = L_NONE;
 #endif
 
 struct device *sprdwl_dev;
+extern struct sprdwl_intf_ops g_intf_ops;
 void adjust_debug_level(char *buf, unsigned char offset)
 {
 	int level = buf[offset] - '0';
@@ -109,6 +110,52 @@ void adjust_tdls_threshold(char *buf, unsigned char offset)
 	wl_err("%s, change tdls_threshold to %d\n", __func__, value);
 }
 
+void adjust_tcpack_th_in_mb(char *buf, unsigned char offset)
+{
+#define MAX_LEN 4
+	unsigned int cnt = 0;
+	unsigned int i = 0;
+
+	for(i = 0; i < MAX_LEN; (cnt *= 10), i++) {
+		if((buf[offset + i] >= '0') &&
+		   (buf[offset + i] <= '9')) {
+			cnt += (unsigned int)(buf[offset + i] - '0');
+		} else {
+			cnt /= 10;
+			break;
+		}
+	}
+
+	if (cnt < 0 || cnt > 9999)
+		cnt = DROPACK_TP_TH_IN_M;
+	((struct sprdwl_intf *)(g_intf_ops.intf))->tcpack_delay_th_in_mb = cnt;
+	wl_info("tcpack_delay_th_in_mb: %d\n", ((struct sprdwl_intf *)(g_intf_ops.intf))->tcpack_delay_th_in_mb);
+#undef MAX_LEN
+}
+
+void adjust_tcpack_time_in_ms(char *buf, unsigned char offset)
+{
+#define MAX_LEN 4
+	unsigned int cnt = 0;
+	unsigned int i = 0;
+
+	for(i = 0; i < MAX_LEN; (cnt *= 10), i++) {
+		if((buf[offset + i] >= '0') &&
+		   (buf[offset + i] <= '9')) {
+			cnt += (unsigned int)(buf[offset + i] - '0');
+		} else {
+			cnt /= 10;
+			break;
+		}
+	}
+
+	if (cnt < 0 || cnt > 9999)
+		cnt = RX_TP_COUNT_IN_MS;
+	((struct sprdwl_intf *)(g_intf_ops.intf))->tcpack_time_in_ms = cnt;
+	wl_info("tcpack_time_in_ms: %d\n", ((struct sprdwl_intf *)(g_intf_ops.intf))->tcpack_time_in_ms);
+#undef MAX_LEN
+}
+
 struct debuginfo_s {
 	void (*func)(char *, unsigned char offset);
 	char str[30];
@@ -124,6 +171,8 @@ struct debuginfo_s {
 	{adjust_txnum_level, "txnum_level="},
 	{adjust_rxnum_level, "rxnum_level="},
 	{adjust_tdls_threshold, "tdls_threshold="},
+	{adjust_tcpack_th_in_mb, "tcpack_delay_th_in_mb="},
+	{adjust_tcpack_time_in_ms, "tcpack_time_in_ms="},
 };
 
 /* TODO: Could we use netdev_alloc_frag instead of kmalloc?
@@ -219,7 +268,7 @@ void sprdwl_event_tdls_flow_count(struct sprdwl_vif *vif, u8 *data, u16 len)
 			peer_info->timer, peer_info->da);
 
 		kt = ktime_get();
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 14, 0)
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 10, 0)
 		intf->tdls_flow_count[i].start_mstime =
 			(u32)(div_u64(kt, NSEC_PER_MSEC));
 #else
@@ -255,7 +304,7 @@ count_it:
 	if (new_threshold != 0)
 		intf->tdls_flow_count[i].threshold = new_threshold;
 	kt = ktime_get();
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 14, 0)
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 10, 0)
 	msec = (u32)(div_u64(kt, NSEC_PER_MSEC));
 #else
 	msec = (u32)(div_u64(kt.tv64, NSEC_PER_MSEC));
@@ -462,7 +511,7 @@ void sprdwl_debugfs_init(struct sprdwl_intf *intf)
 		wl_err("%s, create file fail!\n", __func__);
 
 	if (!debugfs_create_file("txrx_dbg", S_IRUSR | S_IWUSR,
-		sprdwl_debug_root, NULL, &txrx_debug_fops))
+		sprdwl_debug_root, intf, &txrx_debug_fops))
 		wl_err("%s, %d, create_file fail!\n", __func__, __LINE__);
 	else
 		debug_ctrl_init();
@@ -530,20 +579,16 @@ static struct sprdwl_if_ops sprdwl_core_ops = {
 	.ini_download_status = sprdwl_ini_download_status
 };
 
+#ifdef CPUFREQ_UPDATE_SUPPORT
 static struct notifier_block boost_notifier = {
 	.notifier_call = sprdwl_notifier_boost,
 };
+#endif /* CPUFREQ_UPDATE_SUPPORT */
 
 #ifdef CP2_RESET_SUPPORT
-extern struct sprdwl_priv *g_sprdwl_priv;
-extern void sprdwl_cancel_scan(struct sprdwl_vif *vif);
-extern void sprdwl_cancel_sched_scan(struct sprdwl_vif *vif);
-struct completion wifi_reset_ready;
-extern void sprdwl_net_flowcontrl(struct sprdwl_priv *priv, enum sprdwl_mode mode, bool state);
-extern struct sprdwl_cmd g_sprdwl_cmd;
+static void sprdwl_cp2_pre_reset(void) {
 
-static void sprdwl_wifi_reset(void)
-{
+	struct sprdwl_vif *vif, *tmp_vif;
 	struct sprdwl_intf *intf = NULL;
 	struct sprdwl_tx_msg *tx_msg = NULL;
 	struct sprdwl_rx_if *rx_if = NULL;
@@ -552,40 +597,94 @@ static void sprdwl_wifi_reset(void)
 	tx_msg = (void *)intf->sprdwl_tx;
 	rx_if = (struct sprdwl_rx_if *)intf->sprdwl_rx;
 
-	wl_err("cp2 reset begin..........\n");
-	g_sprdwl_priv->sync.scan_not_allowed = true;
-	g_sprdwl_priv->sync.cmd_not_allowed = true;
+	wl_err("%s begin...............\n", __func__);
+
+	g_sprdwl_priv->sync.cp2_reset_flag = true;
 	intf->cp_asserted = 1;
-	intf->exit = 1;
-	if (tx_msg->tx_thread) {
-		tx_up(tx_msg);
-		kthread_stop(tx_msg->tx_thread);
-		tx_msg->tx_thread = NULL;
+	sprdwl_net_flowcontrl(g_sprdwl_priv, SPRDWL_MODE_NONE, false);
+
+	sprdwl_reorder_deinit(&rx_if->ba_entry);
+	sprdwl_flush_all_txlist(tx_msg);
+
+#ifndef SPRD_RX_THREAD
+	flush_workqueue(rx_if->rx_queue);
+#endif
+
+	list_for_each_entry_safe(vif, tmp_vif, &g_sprdwl_priv->vif_list, vif_node) {
+		g_sprdwl_priv->sync.fw_stat[vif->mode] =  g_sprdwl_priv->fw_stat[vif->mode];
+
+		if (g_sprdwl_priv->fw_stat[vif->mode] == SPRDWL_INTF_OPEN) {
+			if ((vif->mode == SPRDWL_MODE_STATION) && (vif->sm_state != SPRDWL_DISCONNECTED)) {
+				sprdwl_report_disconnection(vif, true);
+			}
+			if (g_sprdwl_priv->scan_vif)
+				sprdwl_cancel_scan(g_sprdwl_priv->scan_vif);
+			if(g_sprdwl_priv->sched_scan_vif) {
+				sprdwl_sched_scan_done(g_sprdwl_priv->sched_scan_vif, true);
+				sprdwl_cancel_sched_scan(g_sprdwl_priv->sched_scan_vif);
+			}
+
+			g_sprdwl_priv->fw_stat[vif->mode] = SPRDWL_INTF_CLOSE;
+			handle_tx_status_after_close(vif);
+		}
 	}
 
-	wl_err("cp2 reset finish..........\n");
+	sprdwl_cmd_wake_upall();
+	sprdwl_tcp_ack_deinit(g_sprdwl_priv);
+
+	wl_err("%s complete...............\n", __func__);
 }
 
-static int wifi_exception_event(void)
-{
-	char *envp[2];
-	envp[0] = "CP2-EXCEPTION-EVENT";
-	envp[1] = NULL;
-	kobject_uevent_env(&sprdwl_dev->kobj, KOBJ_CHANGE, envp);
-	return 0;
+static void sprdwl_cp2_post_reset(void) {
+
+	struct sprdwl_vif *vif, *tmp_vif;
+	struct sprdwl_intf *intf = NULL;
+	struct sprdwl_rx_if *rx_if = NULL;
+
+	wl_err("%s begin...............\n", __func__);
+
+	intf = (struct sprdwl_intf *)g_sprdwl_priv->hw_priv;
+	rx_if = (struct sprdwl_rx_if *)intf->sprdwl_rx;
+
+	intf->cp_asserted = 0;
+	sprdwl_reorder_init(&rx_if->ba_entry);
+	sprdwl_sync_version(g_sprdwl_priv);
+	sprdwl_download_ini(g_sprdwl_priv);
+	sprdwl_tcp_ack_init(g_sprdwl_priv);
+	sprdwl_get_fw_info(g_sprdwl_priv);
+	sprdwl_reg_notify(g_sprdwl_priv->wiphy, &g_sprdwl_priv->sync.request);
+
+	list_for_each_entry_safe(vif, tmp_vif, &g_sprdwl_priv->vif_list, vif_node) {
+		if(SPRDWL_INTF_OPEN == g_sprdwl_priv->sync.fw_stat[vif->mode]) {
+			vif->mode = SPRDWL_MODE_NONE;
+			sprdwl_init_fw(vif);
+		}
+	}
+
+	sprdwl_net_flowcontrl(g_sprdwl_priv, SPRDWL_MODE_NONE, true);
+	g_sprdwl_priv->sync.cp2_reset_flag = false;
+
+	wl_err("%s complete...............\n", __func__);
 }
 
-int wifi_reset_callback(struct notifier_block *nb, unsigned long event, void *v)
-{
-	sprdwl_wifi_reset();
-	wifi_exception_event();
+int sprdwl_cp2_reset_callback(struct notifier_block *nb, unsigned long event, void *v) {
+
+	wl_info("%s[%d]: %s %d\n", __func__, __LINE__, (char *)v, (int)event);
+	switch(event) {
+		case 1:
+			sprdwl_cp2_pre_reset();
+			break;
+		case 0:
+			sprdwl_cp2_post_reset();
+			break;
+	}
+
 	return NOTIFY_OK;
 }
-
-static struct notifier_block wifi_reset_notifier = {
-    .notifier_call = wifi_reset_callback,
+static struct notifier_block sprdwl_cp2_reset_notifier = {
+    .notifier_call = sprdwl_cp2_reset_callback,
 };
-#endif
+#endif /*CP2_RESET_SUPPORT*/
 
 static int sprdwl_probe(struct platform_device *pdev)
 {
@@ -593,10 +692,6 @@ static int sprdwl_probe(struct platform_device *pdev)
 	struct sprdwl_priv *priv;
 	int ret;
 	u8 i;
-
-#ifdef CP2_RESET_SUPPORT
-	marlin_reset_callback_register(MARLIN_WIFI, &wifi_reset_notifier);
-#endif
 
 	if (start_marlin(MARLIN_WIFI)) {
 		wl_err("%s power on chipset failed\n", __func__);
@@ -686,11 +781,19 @@ static int sprdwl_probe(struct platform_device *pdev)
 #endif
 
 	sprdwl_debugfs_init(intf);
+
+#ifdef CPUFREQ_UPDATE_SUPPORT
 	cpufreq_register_notifier(&boost_notifier, CPUFREQ_POLICY_NOTIFIER);
+#endif /* CPUFREQ_UPDATE_SUPPORT */
+
+#ifdef CP2_RESET_SUPPORT
+	marlin_reset_callback_register(MARLIN_WIFI, &sprdwl_cp2_reset_notifier);
+#endif /*CP2_RESET_SUPPORT*/
 
 	return ret;
 
 err_core_init:
+	sprdwl_bus_deinit();
 	sprdwl_tx_deinit(intf);
 err_tx_init:
 	sprdwl_rx_deinit(intf);
@@ -710,12 +813,16 @@ static int sprdwl_remove(struct platform_device *pdev)
 	struct sprdwl_priv *priv = intf->priv;
 
 #ifdef CP2_RESET_SUPPORT
-	marlin_reset_callback_unregister(MARLIN_WIFI, &wifi_reset_notifier);
-#endif
+	marlin_reset_callback_unregister(MARLIN_WIFI, &sprdwl_cp2_reset_notifier);
+#endif /*CP2_RESET_SUPPORT*/
 
+#ifdef CPUFREQ_UPDATE_SUPPORT
 	cpufreq_unregister_notifier(&boost_notifier, CPUFREQ_POLICY_NOTIFIER);
+#endif /* CPUFREQ_UPDATE_SUPPORT */
+
 	sprdwl_debugfs_deinit();
 	sprdwl_core_deinit(priv);
+	sprdwl_bus_deinit();
 	sprdwl_tx_deinit(intf);
 	sprdwl_rx_deinit(intf);
 	sprdwl_intf_deinit(intf);

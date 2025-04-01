@@ -367,12 +367,19 @@ void sprdwl_count_tx_tp(struct sprdwl_tx_msg *tx_msg, int num)
 #if LINUX_VERSION_CODE < KERNEL_VERSION(4, 10, 0)
 	timeus = div_u64(tx_msg->txtimeend.tv64 - tx_msg->txtimebegin.tv64, NSEC_PER_USEC);
 #else
-	timeus = ktime_to_us(tx_msg->txtimeend - tx_msg->txtimebegin);
+	timeus = div_u64(tx_msg->txtimeend - tx_msg->txtimebegin, NSEC_PER_USEC);
 #endif
+
+	if(!timeus) {
+		return;
+	}
+
 	if (div_u64((tx_msg->tx_data_num * 1000), timeus) >= intf->txnum_level &&
 		tx_msg->tx_data_num >= 1000) {
 		tx_msg->tx_data_num = 0;
+#ifdef CPUFREQ_UPDATE_SUPPORT
 		sprdwl_boost();
+#endif /* CPUFREQ_UPDATE_SUPPORT */
 	} else if (timeus >= USEC_PER_SEC) {
 		tx_msg->tx_data_num = 0;
 	}
@@ -404,10 +411,8 @@ int sprdwl_intf_tx_list(struct sprdwl_intf *dev,
 	int tx_count_saved = tx_count;
 	int list_num;
 
-#ifdef CP2_RESET_SUPPORT
-	if (dev->cp_asserted == 1)
+	if(dev->cp_asserted ==1)
 		return 0;
-#endif
 
 	wl_debug("%s:%d tx_count is %d\n", __func__, __LINE__, tx_count);
 	list_num = get_list_num(tx_list);
@@ -1038,16 +1043,37 @@ void sprdwl_count_rx_tp(struct sprdwl_rx_if *rx_if, int num)
 #if LINUX_VERSION_CODE < KERNEL_VERSION(4, 10, 0)
 	timeus = div_u64(rx_if->rxtimeend.tv64 - rx_if->rxtimebegin.tv64, NSEC_PER_USEC);
 #else
-	timeus = ktime_to_us(rx_if->rxtimeend - rx_if->rxtimebegin);
+	timeus = div_u64(rx_if->rxtimeend - rx_if->rxtimebegin, NSEC_PER_USEC);
 #endif
+
+	if(!timeus) {
+		return;
+	}
+
 	if (div_u64((rx_if->rx_data_num * 1000), timeus) >= intf->rxnum_level &&
 		rx_if->rx_data_num >= 1000) {
 		rx_if->rx_data_num = 0;
+#ifdef CPUFREQ_UPDATE_SUPPORT
 		sprdwl_boost();
+#endif /* CPUFREQ_UPDATE_SUPPORT */
 	} else if (timeus >= USEC_PER_SEC) {
 		rx_if->rx_data_num = 0;
 	}
 }
+
+static int check_msdu_early(struct sprdwl_intf *intf, struct mbuf_t *mbuf)
+{
+	struct rx_msdu_desc *msdu_desc =
+		(struct rx_msdu_desc *)(mbuf->buf + intf->hif_offset);
+
+	if (mbuf->len < msdu_desc->msdu_len ||
+	    msdu_desc->msdu_len > 1600) {
+		wl_err("%s, %d, %d, %d\n", __func__, __LINE__, mbuf->len, msdu_desc->msdu_len);
+		return -1;
+	}
+	return 0;
+}
+
 static int intf_rx_handle(int chn, struct mbuf_t *head,
 				   struct mbuf_t *tail, int num)
 {
@@ -1071,6 +1097,13 @@ static int intf_rx_handle(int chn, struct mbuf_t *head,
 		for (i = num; i > 0; i--) {
 			sprdwl_sdio_process_credit(intf,
 				(void *)(mbuf->buf + intf->hif_offset));
+			if (intf->priv->hw_type == SPRDWL_HW_USB &&
+			    chn == USB_RX_DATA_PORT &&
+			    check_msdu_early(intf, mbuf)) {
+				sprdwcn_bus_push_list(chn, head, tail, num);
+				return 0;
+			}
+
 			mbuf = mbuf->next;
 		}
 	}
@@ -1089,41 +1122,13 @@ static int intf_rx_handle(int chn, struct mbuf_t *head,
 	msg->data = (void *)tail;
 
 	sprdwl_queue_msg_buf(msg, &rx_if->rx_list);
+#ifdef SPRD_RX_THREAD
+	rx_up(rx_if);
+#else
 	queue_work(rx_if->rx_queue, &rx_if->rx_work);
-
-	return 0;
-}
-
-#ifdef RX_NAPI
-static int intf_napi_rx_handle(int chn, struct mbuf_t *head,
-					struct mbuf_t *tail, int num)
-{
-	struct sprdwl_intf *intf = get_intf();
-	struct sprdwl_rx_if *rx_if = (struct sprdwl_rx_if *)intf->sprdwl_rx;
-	struct sprdwl_msg_buf *msg = NULL;
-
-	wl_info("%s: channel:%d head:%p tail:%p num:%d\n",
-		__func__, chn, head, tail, num);
-
-	/* FIXME: Should we use replace msg? */
-	msg = sprdwl_alloc_msg_buf(&rx_if->rx_data_list);
-	if (!msg) {
-		wl_err("%s: no msgbuf\n", __func__);
-		sprdwcn_bus_push_list(chn, head, tail, num);
-		return 0;
-	}
-
-	sprdwl_fill_msg(msg, NULL, (void *)head, num);
-	msg->fifo_id = chn;
-	msg->buffer_type = SPRDWL_DEFRAG_MEM;
-	msg->data = (void *)tail;
-
-	sprdwl_queue_msg_buf(msg, &rx_if->rx_data_list);
-	napi_schedule(&rx_if->napi_rx);
-
-	return 0;
-}
 #endif
+	return 0;
+}
 
 void sprdwl_handle_pop_list(void *data)
 {
@@ -1328,7 +1333,7 @@ int sprdwl_suspend_resume_handle(int chn, int mode)
 	struct sprdwl_intf *intf = get_intf();
 	struct sprdwl_priv *priv = intf->priv;
 	struct sprdwl_tx_msg *tx_msg = (struct sprdwl_tx_msg *)intf->sprdwl_tx;
-	int ret;
+	int ret = -EBUSY;
 	struct sprdwl_vif *vif;
 	struct timespec time;
 	enum sprdwl_mode sprdwl_mode = SPRDWL_MODE_STATION;
@@ -1365,6 +1370,20 @@ int sprdwl_suspend_resume_handle(int chn, int mode)
 		}
 		priv->wakeup_tracer.resume_flag = 0;
 		intf->suspend_mode = SPRDWL_PS_SUSPENDING;
+
+		if ((vif->mode == SPRDWL_MODE_STATION) && (vif->sm_state == SPRDWL_CONNECTED)
+			&& (sprdwcn_bus_get_wl_wake_host_en() == SPRDWL_NO_WAKE_HOST)) {
+			vif->suspend_resume_connect.reconnect_flag = true;
+			priv->is_suspending = 1;
+			sprdwl_cfg80211_disconnect(NULL, vif->ndev, 0);
+		}
+
+		/* if cp2 is wakeup, send power_down firstly */
+		if (intf->fw_power_down != 1) {
+			priv->is_suspending = 1;
+			sprdwl_fw_power_down_ack(vif->priv, vif->ctx_id);
+		}
+
 		getnstimeofday(&time);
 		intf->sleep_time = timespec_to_ns(&time);
 		priv->is_suspending = 1;
@@ -1372,27 +1391,18 @@ int sprdwl_suspend_resume_handle(int chn, int mode)
 					vif->ctx_id,
 					SPRDWL_SUSPEND_RESUME,
 					0);
-		if (ret == 0) {
+		if (ret == 0)
 			intf->suspend_mode = SPRDWL_PS_SUSPENDED;
-#ifdef UNISOC_WIFI_PS
-			sprdwcn_bus_allow_sleep(WIFI);
-			wl_info("sprdwcn bus allow sleep\n");
-#endif
-		}
 		else
 			intf->suspend_mode = SPRDWL_PS_RESUMED;
-		sprdwl_put_vif(vif);
-		return ret;
+
+		wl_info("%s, %d,suspend ret=%d\n", __func__, __LINE__, ret);
 	} else if (mode == 1) {
-#ifdef UNISOC_WIFI_PS
-		sprdwcn_bus_sleep_wakeup(WIFI);
-		wl_info("sprdwcn bus wake up\n");
-#endif
 		intf->suspend_mode = SPRDWL_PS_RESUMING;
 		priv->wakeup_tracer.resume_flag = 1;
-#ifdef UNISOC_WIFI_PS
+
 		complete(&intf->suspend_completed);
-#endif
+
 		getnstimeofday(&time);
 		intf->sleep_time = timespec_to_ns(&time) - intf->sleep_time;
 		ret = sprdwl_power_save(priv,
@@ -1402,11 +1412,14 @@ int sprdwl_suspend_resume_handle(int chn, int mode)
 		wl_info("%s, %d,resume ret=%d, resume after %lu ms\n",
 			__func__, __LINE__,
 			ret, intf->sleep_time/1000000);
-		sprdwl_put_vif(vif);
-		return ret;
+
+		if ((vif->mode == SPRDWL_MODE_STATION) && (vif->suspend_resume_connect.reconnect_flag == true)) {
+			sprdwl_cfg80211_connect(priv->wiphy, vif->ndev, &vif->suspend_resume_connect.connect_params);
+			vif->suspend_resume_connect.reconnect_flag = false;
+		}
 	}
 	sprdwl_put_vif(vif);
-	return -EBUSY;
+	return ret;
 }
 
 /*  SDIO TX:
@@ -1431,15 +1444,9 @@ struct mchn_ops_t sdio_hif_ops[] = {
 	INIT_INTF(SDIO_RX_PKT_LOG_PORT, 0, 0, 0,
 		  SPRDWL_MAX_DATA_RXLEN, 1, 0, 0, 0,
 		  intf_rx_handle, NULL, NULL, NULL),
-#ifdef RX_NAPI
-	INIT_INTF(SDIO_RX_DATA_PORT, 0, 0, 0,
-		  SPRDWL_MAX_DATA_RXLEN, 1, 0, 0, 0,
-		  intf_napi_rx_handle, NULL, NULL, NULL),
-#else
 	INIT_INTF(SDIO_RX_DATA_PORT, 0, 0, 0,
 		  SPRDWL_MAX_DATA_RXLEN, 1, 0, 0, 0,
 		  intf_rx_handle, NULL, NULL, NULL),
-#endif
 
 	/* TX INTF */
 	INIT_INTF(SDIO_TX_CMD_PORT, 0, 1, 0,
@@ -1478,19 +1485,13 @@ struct mchn_ops_t usb_hif_ops[] = {
 	INIT_INTF(USB_RX_PKT_LOG_PORT, 3, 0, 0,
 		  SPRDWL_MAX_DATA_RXLEN, 50, 0, 0, 0,
 		  intf_rx_handle, NULL, NULL, NULL),
-#ifndef RX_NAPI
 	INIT_INTF(USB_RX_DATA_PORT, 3, 0, 0,
 		  SPRDWL_MAX_DATA_RXLEN, 1000, 0, 0, 0,
 		  intf_rx_handle, NULL, NULL, NULL),
-#else
-	INIT_INTF(USB_RX_DATA_PORT, 3, 0, 0,
-		  SPRDWL_MAX_DATA_RXLEN, 300, 0, 0, 0,
-		  intf_napi_rx_handle, NULL, NULL, NULL),
-#endif
 
 	/* TX INTF */
 	INIT_INTF(USB_TX_CMD_PORT, 3, 1, 0,
-		  SPRDWL_MAX_CMD_TXLEN, 20, 0, 0, 0,
+		  SPRDWL_MAX_CMD_TXLEN, 100, 0, 0, 0,
 		  sprdwl_tx_cmd_pop_list, NULL, NULL,
 		  sprdwl_suspend_resume_handle),
 	INIT_INTF(USB_TX_DATA_PORT, 3, 1, 0,
@@ -1726,19 +1727,29 @@ void sprdwl_tx_delba(struct sprdwl_intf *intf,
 	sprdwl_put_vif(vif);
 }
 
+#ifdef CPUFREQ_UPDATE_SUPPORT
 int sprdwl_notifier_boost(struct notifier_block *nb, unsigned long event, void *data)
 {
+#if KERNEL_VERSION(5, 4, 19) <= LINUX_VERSION_CODE
+	struct cpufreq_policy_data *policy = data;
+#else
 	struct cpufreq_policy *policy = data;
+#endif
 	unsigned long min_freq;
 	unsigned long max_freq = policy->cpuinfo.max_freq;
 	struct sprdwl_intf *intf = get_intf();
 	u8 boost;
-	if (NULL == intf)
+
+	if(NULL == intf)
 		return NOTIFY_DONE;
 
 	boost = intf->boost;
 
+#if KERNEL_VERSION(5, 4, 0) <= LINUX_VERSION_CODE
+	if (event != CPUFREQ_CREATE_POLICY)
+#else
 	if (event != CPUFREQ_ADJUST)
+#endif
 		return NOTIFY_DONE;
 
 	min_freq = boost ? 1200000 : 400000;
@@ -1766,6 +1777,7 @@ void sprdwl_unboost(void)
 		cpufreq_update_policy(0);
 	}
 }
+#endif /* CPUFREQ_UPDATE_SUPPORT */
 
 void adjust_txnum_level(char *buf, unsigned char offset)
 {
@@ -1815,7 +1827,40 @@ void adjust_rxnum_level(char *buf, unsigned char offset)
 #undef MAX_LEN
 }
 
-int sprdwl_intf_init(struct sprdwl_priv *priv, struct sprdwl_intf *intf)
+void sprdwl_count_rx_tp_tcp_ack(struct sprdwl_intf *intf, u32 len)
+{
+	unsigned long long timeus = 0;
+	struct sprdwl_rx_if *rx_if = (struct sprdwl_rx_if *)intf->sprdwl_rx;
+
+	rx_if->rx_total_len += (unsigned long)len;
+	if (rx_if->rx_total_len == (unsigned long)len) {
+		rx_if->rxtimebegin = ktime_get();
+		return;
+	}
+
+	rx_if->rxtimeend = ktime_get();
+#if LINUX_VERSION_CODE < KERNEL_VERSION(4, 10, 0)
+	timeus = div_u64(rx_if->rxtimeend.tv64 - rx_if->rxtimebegin.tv64, NSEC_PER_USEC);
+#else
+	timeus = div_u64(rx_if->rxtimeend - rx_if->rxtimebegin, NSEC_PER_USEC);
+#endif
+
+	if(!timeus) {
+		return;
+	}
+
+	if (div_u64(((unsigned long long)rx_if->rx_total_len * 8 ) , (u32)timeus) >= (unsigned long long)intf->tcpack_delay_th_in_mb &&
+		timeus > (unsigned long long)intf->tcpack_time_in_ms * USEC_PER_MSEC) {
+		rx_if->rx_total_len = 0;
+		enable_tcp_ack_delay("tcpack_delay_en=1", strlen("tcpack_delay_en="));
+	} else if (div_u64((rx_if->rx_total_len * 8 ) , (u32)timeus) < intf->tcpack_delay_th_in_mb &&
+		timeus > intf->tcpack_time_in_ms * USEC_PER_MSEC) {
+		rx_if->rx_total_len = 0;
+		enable_tcp_ack_delay("tcpack_delay_en=0", strlen("tcpack_delay_en="));
+	}
+}
+
+int sprdwl_bus_init(struct sprdwl_priv *priv)
 {
 	int ret = -EINVAL, chn = 0;
 
@@ -1842,44 +1887,63 @@ int sprdwl_intf_init(struct sprdwl_priv *priv, struct sprdwl_intf *intf)
 			if (ret < 0)
 				goto err;
 		}
-
-		g_intf_ops.intf = (void *)intf;
-		/* TODO: Need we reserve g_intf_ops? */
-		intf->hw_intf = (void *)&g_intf_ops;
-
-		priv->hw_priv = intf;
-		priv->hw_offset = intf->hif_offset;
-		intf->priv = priv;
-		intf->fw_awake = 1;
-		intf->fw_power_down = 0;
-		intf->txnum_level = BOOST_TXNUM_LEVEL;
-		intf->rxnum_level = BOOST_RXNUM_LEVEL;
-		intf->boost = 0;
-#ifdef UNISOC_WIFI_PS
-		init_completion(&intf->suspend_completed);
-#endif
-	} else {
-err:
-		wl_err("%s: unregister %d ops\n",
-		       __func__, g_intf_ops.max_num);
-
-		for (; chn > 0; chn--)
-			sprdwcn_bus_chn_deinit(&g_intf_ops.hif_ops[chn]);
-
-		g_intf_ops.hif_ops = NULL;
-		g_intf_ops.max_num = 0;
+		return 0;
 	}
+err:
+	wl_err("%s: unregister %d ops\n",
+		     __func__, g_intf_ops.max_num);
+
+	for (; chn > 0; chn--)
+		sprdwcn_bus_chn_deinit(&g_intf_ops.hif_ops[chn]);
+
+	g_intf_ops.hif_ops = NULL;
+	g_intf_ops.max_num = 0;
+
+	return ret;
+}
+
+void sprdwl_bus_deinit(void)
+{
+	int chn = 0;
+
+	for (chn = 0; chn < g_intf_ops.max_num; chn++)
+		sprdwcn_bus_chn_deinit(&g_intf_ops.hif_ops[chn]);
+}
+
+int sprdwl_intf_init(struct sprdwl_priv *priv, struct sprdwl_intf *intf)
+{
+	int ret = -EINVAL;
+
+	ret = sprdwl_bus_init(priv);
+	if (ret < 0)
+		return ret;
+
+	g_intf_ops.intf = (void *)intf;
+	/* TODO: Need we reserve g_intf_ops? */
+	intf->hw_intf = (void *)&g_intf_ops;
+
+	priv->hw_priv = intf;
+	priv->hw_offset = intf->hif_offset;
+	intf->priv = priv;
+	intf->fw_awake = 1;
+	intf->fw_power_down = 0;
+	intf->txnum_level = BOOST_TXNUM_LEVEL;
+	intf->rxnum_level = BOOST_RXNUM_LEVEL;
+
+#ifdef CPUFREQ_UPDATE_SUPPORT
+	intf->boost = 0;
+#endif /* CPUFREQ_UPDATE_SUPPORT */
+
+	intf->tcpack_time_in_ms = RX_TP_COUNT_IN_MS;
+	intf->tcpack_delay_th_in_mb = DROPACK_TP_TH_IN_M;
+
+	init_completion(&intf->suspend_completed);
 
 	return ret;
 }
 
 void sprdwl_intf_deinit(struct sprdwl_intf *dev)
 {
-	int chn = 0;
-
-	for (chn = 0; chn < g_intf_ops.max_num; chn++)
-		sprdwcn_bus_chn_deinit(&g_intf_ops.hif_ops[chn]);
-
 	g_intf_ops.intf = NULL;
 	g_intf_ops.max_num = 0;
 	dev->hw_intf = NULL;
