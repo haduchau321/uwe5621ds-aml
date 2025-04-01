@@ -2,6 +2,7 @@
 #define __SDIO_INT_H__
 #include <linux/device.h>
 #include <linux/version.h>
+#include <linux/pm_wakeup.h>
 #if KERNEL_VERSION(4, 14, 0) <= LINUX_VERSION_CODE
 #include <linux/wakelock.h>
 #endif
@@ -131,4 +132,20 @@ int sdio_pub_int_RegCb(enum PUB_INT_BIT bit,
 void sdio_pub_int_poweron(bool state);
 int sdio_pub_int_init(int irq);
 int sdio_pub_int_deinit(void);
+
+// Thay thế wakelock bằng pm_wakeup
+struct wakeup_source *ws;
+
+// Khởi tạo
+ws = wakeup_source_register(NULL, "my_wakelock");
+
+// Kích hoạt wakelock
+__pm_stay_awake(ws);
+
+// Giải phóng wakelock
+__pm_relax(ws);
+
+// Giải phóng tài nguyên
+wakeup_source_unregister(ws);
+
 #endif
