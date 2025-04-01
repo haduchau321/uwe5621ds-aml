@@ -3,9 +3,6 @@
 #include <linux/device.h>
 #include <linux/version.h>
 #include <linux/pm_wakeup.h>
-#if KERNEL_VERSION(4, 14, 0) <= LINUX_VERSION_CODE
-#include <linux/wakelock.h>
-#endif
 
 #define SLP_MGR_HEADER "[slp_mgr]"
 
@@ -133,7 +130,7 @@ void sdio_pub_int_poweron(bool state);
 int sdio_pub_int_init(int irq);
 int sdio_pub_int_deinit(void);
 
-// Thay thế wakelock bằng pm_wakeup
+
 struct wakeup_source *ws;
 
 // Khởi tạo
