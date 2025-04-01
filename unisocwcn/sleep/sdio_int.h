@@ -130,37 +130,19 @@ void sdio_pub_int_poweron(bool state);
 int sdio_pub_int_init(int irq);
 int sdio_pub_int_deinit(void);
 
+
 struct wakeup_source *ws;
-struct wakeup_source *pub_int_wakelock;
 
-void example_function(void) {
-    // Khởi tạo wakeup source
-    ws = wakeup_source_register(NULL, "example");
+// Khởi tạo
+ws = wakeup_source_register(NULL, "my_wakelock");
 
-    // Kích hoạt wakelock
-    __pm_stay_awake(ws);
+// Kích hoạt wakelock
+__pm_stay_awake(ws);
 
-    // Giải phóng wakelock
-    __pm_relax(ws);
+// Giải phóng wakelock
+__pm_relax(ws);
 
-    // Giải phóng tài nguyên
-    wakeup_source_unregister(ws);
-}
-
-void init_wakelock(void) {
-    pub_int_wakelock = wakeup_source_register(NULL, "pub_int_wakelock");
-}
-
-void acquire_wakelock(void) {
-    __pm_stay_awake(pub_int_wakelock);
-}
-
-void release_wakelock(void) {
-    __pm_relax(pub_int_wakelock);
-}
-
-void destroy_wakelock(void) {
-    wakeup_source_unregister(pub_int_wakelock);
-}
+// Giải phóng tài nguyên
+wakeup_source_unregister(ws);
 
 #endif
