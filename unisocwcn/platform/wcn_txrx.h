@@ -18,9 +18,7 @@
 #include <linux/types.h>
 #include <linux/version.h>
 #include <linux/wait.h>
-#if KERNEL_VERSION(4, 14, 0) <= LINUX_VERSION_CODE
-#include <linux/wakelock.h>
-#endif
+#include <linux/pm_wakeup.h>
 
 #include "mdbg_type.h"
 #include <wcn_bus.h>
@@ -145,5 +143,27 @@ int mdbg_tx_power_notify(int chn, int flag);
 long mdbg_content_len(void);
 int mdbg_read_release(unsigned int fifo_id);
 bool mdbg_rx_count_change(void);
+
+struct wakeup_source *my_wakelock;
+
+void example_function(void) {
+    // Khởi tạo wakelock
+    if (!my_wakelock)
+        my_wakelock = wakeup_source_register(NULL, "my_wakelock");
+
+    // Kích hoạt wakelock
+    __pm_stay_awake(my_wakelock);
+
+    // ... some code ...
+
+    // Giải phóng wakelock
+    __pm_relax(my_wakelock);
+}
+
+// Giải phóng tài nguyên khi không cần nữa
+void cleanup_function(void) {
+    if (my_wakelock)
+        wakeup_source_unregister(my_wakelock);
+}
 
 #endif
